@@ -46,12 +46,6 @@ TIMES = {
 }
 
 # -------------------------------------------------
-# (Jika masih ada REMINDER_SECTIONS yang lama, bisa dikosongkan
-#  atau diisi ulang nanti—di contoh ini kita tidak pakai REMINDER_SECTIONS
-#  karena scheduling akan diset secara manual berdasarkan pilihan user.)
-# -------------------------------------------------
-
-# -------------------------------------------------
 # Fungsi untuk mengirim pesan reminder (contoh saja; bisa kamu costum ulang)
 # -------------------------------------------------
 async def reminder(context: ContextTypes.DEFAULT_TYPE):
@@ -61,7 +55,6 @@ async def reminder(context: ContextTypes.DEFAULT_TYPE):
     jam = data.get("jam")
     thread_id = data.get("thread_id")
 
-    # Di sini kamu bisa tambahkan cek status completed_tasks jika perlu
     await context.bot.send_message(
         chat_id=chat_id,
         message_thread_id=thread_id,
@@ -83,7 +76,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🕒 Pilih kategori waktu pengingat:", reply_markup=reply_markup)
 
 # -------------------------------------------------
-# CallbackQueryHandler: alur tiga tingkat tombol
+# CallbackQueryHandler: alur tombol (termasuk “Aktifkan”)
 # -------------------------------------------------
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -94,21 +87,80 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 1) USER MEMILIH “PAGI/SIANG/MALAM” (tombol utama)
     if data.startswith("main_"):
         waktu = data.split("_")[1]  # “pagi” atau “siang” atau “malam”
+        # Tombol “Aktifkan” besar di atas
+        tombol_aktifkan = InlineKeyboardButton(
+            f"🔔 Aktifkan {waktu.capitalize()}",
+            callback_data=f"activate_{waktu}"
+        )
+
         # Tampilkan submenu 20 bagian
-        keyboard = []
+        keyboard = [[tombol_aktifkan]]
         for i in range(0, len(SUBMENUS), 4):  # 4 tombol per baris agar layout lebih rapih
             row = [
                 InlineKeyboardButton(
                     name, callback_data=f"sub_{waktu}_{name}"
-                ) 
+                )
                 for name in SUBMENUS[i:i+4]
             ]
             keyboard.append(row)
 
         await query.edit_message_text(
-            text=f"⌚ Kategori: *{waktu.capitalize()}*\nPilih bagian:",
+            text=f"⌚ Kategori: *{waktu.capitalize()}*\nPilih bagian atau Aktifkan semua:",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    # 1b) USER MENEKAN “AKTIFKAN_{waktu}” (misal: activate_pagi)
+    elif data.startswith("activate_"):
+        _, waktu = data.split("_", maxsplit=1)
+        chat_id = query.message.chat.id
+        jam_list = TIMES[waktu]
+
+        scheduled_count = 0
+        for bagian in SUBMENUS:
+            for jam in jam_list:
+                # Hitung waktu lokal untuk pengiriman reminder (5 menit sebelum)
+                now_local = datetime.datetime.now(timezone)
+                jam_int, menit_int = map(int, jam.split(":"))
+                target_local = now_local.replace(hour=jam_int, minute=menit_int, second=0, microsecond=0)
+                reminder_local = target_local - datetime.timedelta(minutes=5)
+                if reminder_local.tzinfo is None:
+                    reminder_local = timezone.localize(reminder_local)
+                reminder_utc_time = reminder_local.astimezone(pytz.utc).time()
+
+                clean_msg = f"{bagian}_{waktu}_{jam}"
+                clean_msg = re.sub(r'\W+', '_', clean_msg)
+                job_name = f"reminder_{chat_id}_{clean_msg}"
+
+                # Hapus job lama jika sudah ada
+                for old_job in context.job_queue.get_jobs_by_name(job_name):
+                    try:
+                        old_job.schedule_removal()
+                    except JobLookupError:
+                        pass
+
+                # Jadwalkan job baru
+                job = context.job_queue.run_daily(
+                    reminder,
+                    time=reminder_utc_time,
+                    name=job_name,
+                    data={
+                        "chat_id": chat_id,
+                        "section": bagian,
+                        "jam": jam,
+                        "thread_id": None
+                    }
+                )
+                user_jobs.setdefault(chat_id, []).append(job)
+                scheduled_count += 1
+
+        await query.edit_message_text(
+            text=(
+                f"✅ Semua reminder untuk *{waktu.capitalize()}* telah diaktifkan!\n"
+                f"• Total job terjadwal: *{scheduled_count}* (20 bagian × {len(jam_list)} jam)\n\n"
+                f"_Reminder akan dikirim 5 menit sebelum setiap jam di jadwal {waktu}._"
+            ),
+            parse_mode="Markdown"
         )
 
     # 2) USER MEMILIH “SUBMENU BAGIAN” (DWT/BG/.../CITI)
@@ -132,20 +184,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
-    # 3) USER MEMILIH “JAM PENGINGAT”
+    # 3) USER MEMILIH “JAM PENGINGAT” untuk satu bagian
     elif data.startswith("set_"):
         _, waktu, bagian, jam = data.split("_", maxsplit=3)
         chat_id = query.message.chat.id
 
-        # Simpan job scheduling: 
-        # Contoh:  jadwalkan reminder pada jam yang dipilih (5 menit sebelum jam tsb)
-        # Kamu bisa menyesuaikan penyimpanan data (misal: ke context.bot_data, db, dll).
-        # Di sini kita pakai APScheduler yang tersimpan di user_jobs.
-
-        # --- contoh scheduling satu job:
         now_local = datetime.datetime.now(timezone)
-        jam_int = int(jam.split(":")[0])
-        menit_int = int(jam.split(":")[1])
+        jam_int, menit_int = map(int, jam.split(":"))
         target_local = now_local.replace(hour=jam_int, minute=menit_int, second=0, microsecond=0)
         reminder_local = target_local - datetime.timedelta(minutes=5)
         if reminder_local.tzinfo is None:
@@ -172,7 +217,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "chat_id": chat_id,
                 "section": bagian,
                 "jam": jam,
-                "thread_id": None  # kalau pakai topics, bisa diisi thread_id
+                "thread_id": None
             }
         )
         user_jobs.setdefault(chat_id, []).append(job)
