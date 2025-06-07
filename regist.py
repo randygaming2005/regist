@@ -46,7 +46,7 @@ TIMES = {
 }
 
 # -------------------------------------------------
-# Fungsi untuk mengirim pesan reminder (contoh saja; bisa kamu costum ulang)
+# Fungsi untuk mengirim pesan reminder
 # -------------------------------------------------
 async def reminder(context: ContextTypes.DEFAULT_TYPE):
     data = context.job.data or {}
@@ -62,7 +62,7 @@ async def reminder(context: ContextTypes.DEFAULT_TYPE):
     )
 
 # -------------------------------------------------
-# Handler /start: tampilkan 3 tombol utama (Pagi, Siang, Malam)
+# Handler /start: tampilkan 3 tombol utama
 # -------------------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
@@ -76,7 +76,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🕒 Pilih kategori waktu pengingat:", reply_markup=reply_markup)
 
 # -------------------------------------------------
-# CallbackQueryHandler: alur tombol (termasuk “Aktifkan”)
+# CallbackQueryHandler: alur tombol (termasuk “Aktifkan” & “Reset”)
 # -------------------------------------------------
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -87,15 +87,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 1) USER MEMILIH “PAGI/SIANG/MALAM” (tombol utama)
     if data.startswith("main_"):
         waktu = data.split("_")[1]  # “pagi” atau “siang” atau “malam”
+
         # Tombol “Aktifkan” besar di atas
         tombol_aktifkan = InlineKeyboardButton(
             f"🔔 Aktifkan {waktu.capitalize()}",
             callback_data=f"activate_{waktu}"
         )
+        # Tombol “Reset” besar di bawah
+        tombol_reset = InlineKeyboardButton(
+            f"🔄 Reset {waktu.capitalize()}",
+            callback_data=f"reset_{waktu}"
+        )
 
-        # Tampilkan submenu 20 bagian
-        keyboard = [[tombol_aktifkan]]
-        for i in range(0, len(SUBMENUS), 4):  # 4 tombol per baris agar layout lebih rapih
+        # Tampilkan tombol utama + tombol reset, lalu submenu 20 bagian
+        keyboard = [
+            [tombol_aktifkan],
+            [tombol_reset],
+        ]
+        for i in range(0, len(SUBMENUS), 4):
             row = [
                 InlineKeyboardButton(
                     name, callback_data=f"sub_{waktu}_{name}"
@@ -105,12 +114,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard.append(row)
 
         await query.edit_message_text(
-            text=f"⌚ Kategori: *{waktu.capitalize()}*\nPilih bagian atau Aktifkan semua:",
+            text=f"⌚ Kategori: *{waktu.capitalize()}*\nPilih bagian, Aktifkan semua, atau Reset:",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
-    # 1b) USER MENEKAN “AKTIFKAN_{waktu}” (misal: activate_pagi)
+    # 1b) USER MENEKAN “AKTIFKAN_{waktu}”
     elif data.startswith("activate_"):
         _, waktu = data.split("_", maxsplit=1)
         chat_id = query.message.chat.id
@@ -119,7 +128,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         scheduled_count = 0
         for bagian in SUBMENUS:
             for jam in jam_list:
-                # Hitung waktu lokal untuk pengiriman reminder (5 menit sebelum)
                 now_local = datetime.datetime.now(timezone)
                 jam_int, menit_int = map(int, jam.split(":"))
                 target_local = now_local.replace(hour=jam_int, minute=menit_int, second=0, microsecond=0)
@@ -128,11 +136,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     reminder_local = timezone.localize(reminder_local)
                 reminder_utc_time = reminder_local.astimezone(pytz.utc).time()
 
-                clean_msg = f"{bagian}_{waktu}_{jam}"
-                clean_msg = re.sub(r'\W+', '_', clean_msg)
+                clean_msg = re.sub(r'\W+', '_', f"{bagian}_{waktu}_{jam}")
                 job_name = f"reminder_{chat_id}_{clean_msg}"
 
-                # Hapus job lama jika sudah ada
+                # Hapus job lama jika ada
                 for old_job in context.job_queue.get_jobs_by_name(job_name):
                     try:
                         old_job.schedule_removal()
@@ -144,12 +151,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     reminder,
                     time=reminder_utc_time,
                     name=job_name,
-                    data={
-                        "chat_id": chat_id,
-                        "section": bagian,
-                        "jam": jam,
-                        "thread_id": None
-                    }
+                    data={"chat_id": chat_id, "section": bagian, "jam": jam, "thread_id": None}
                 )
                 user_jobs.setdefault(chat_id, []).append(job)
                 scheduled_count += 1
@@ -163,13 +165,48 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
 
+    # 1c) USER MENEKAN “RESET_{waktu}”
+    elif data.startswith("reset_"):
+        _, waktu = data.split("_", maxsplit=1)
+        chat_id = query.message.chat.id
+        removed = 0
+
+        # Hapus semua job di kategori waktu ini
+        for bagian in SUBMENUS:
+            for jam in TIMES[waktu]:
+                clean_msg = re.sub(r'\W+', '_', f"{bagian}_{waktu}_{jam}")
+                job_name = f"reminder_{chat_id}_{clean_msg}"
+
+                for job in context.job_queue.get_jobs_by_name(job_name):
+                    try:
+                        job.schedule_removal()
+                        removed += 1
+                    except JobLookupError:
+                        pass
+
+        # Perbarui dict user_jobs agar mencerminkan penghapusan
+        if chat_id in user_jobs:
+            user_jobs[chat_id] = [
+                job for job in user_jobs[chat_id]
+                if not (job.name.startswith(f"reminder_{chat_id}_") and f"_{waktu}_" in job.name)
+            ]
+
+        await query.edit_message_text(
+            text=(
+                f"🔄 Semua reminder untuk *{waktu.capitalize()}* telah di-reset!\n"
+                f"• Total job dibatalkan: *{removed}*\n\n"
+                f"_Anda bisa mengaktifkan ulang kapan saja melalui menu._"
+            ),
+            parse_mode="Markdown"
+        )
+
     # 2) USER MEMILIH “SUBMENU BAGIAN” (DWT/BG/.../CITI)
     elif data.startswith("sub_"):
         _, waktu, bagian = data.split("_", maxsplit=2)
         jam_list = TIMES[waktu]
 
         keyboard = []
-        for i in range(0, len(jam_list), 3):  # 3 tombol jam per baris
+        for i in range(0, len(jam_list), 3):
             row = [
                 InlineKeyboardButton(
                     jam, callback_data=f"set_{waktu}_{bagian}_{jam}"
@@ -197,11 +234,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reminder_local = timezone.localize(reminder_local)
         reminder_utc_time = reminder_local.astimezone(pytz.utc).time()
 
-        clean_msg = f"{bagian}_{waktu}_{jam}"
-        clean_msg = re.sub(r'\W+', '_', clean_msg)
+        clean_msg = re.sub(r'\W+', '_', f"{bagian}_{waktu}_{jam}")
         job_name = f"reminder_{chat_id}_{clean_msg}"
 
-        # Hapus job lama jika sudah ada
+        # Hapus job lama jika ada
         for old_job in context.job_queue.get_jobs_by_name(job_name):
             try:
                 old_job.schedule_removal()
@@ -213,12 +249,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reminder,
             time=reminder_utc_time,
             name=job_name,
-            data={
-                "chat_id": chat_id,
-                "section": bagian,
-                "jam": jam,
-                "thread_id": None
-            }
+            data={"chat_id": chat_id, "section": bagian, "jam": jam, "thread_id": None}
         )
         user_jobs.setdefault(chat_id, []).append(job)
 
