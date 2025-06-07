@@ -56,7 +56,6 @@ TIMES = {
 # ----------------------
 
 async def group_reminder(context: ContextTypes.DEFAULT_TYPE):
-    """Kirim pengingat 5 menit sebelum jam ke grup."""
     data = context.job.data
     chat_id = data["chat_id"]
     jam = data["jam"]
@@ -66,7 +65,6 @@ async def group_reminder(context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def check_overdue(context: ContextTypes.DEFAULT_TYPE):
-    """Cek 20 menit setelah jam; DM admin jika belum marked ✅."""
     data = context.job.data
     chat_id = data["chat_id"]
     jam = data["jam"]
@@ -90,22 +88,21 @@ async def check_overdue(context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Gagal mengirim DM overdue: {e}")
 
 async def daily_summary(context: ContextTypes.DEFAULT_TYPE):
-    """Kirim ringkasan harian setiap pukul 06:00 WIB."""
     yesterday = (datetime.datetime.now(timezone) - datetime.timedelta(days=1)).date()
     for chat_id in user_chats:
         skips = user_skips.get(chat_id, set())
-        done = [f"{sec} {jam}" for sec in SUBMENUS for jam in TIMES["pagi"]+TIMES["siang"]+TIMES["malam"]
-                if f"{sec}_{jam}" in skips]
         total = len(SUBMENUS) * sum(len(v) for v in TIMES.values())
+        done = [f"{sec} {jam}" for sec in SUBMENUS for jam_list in TIMES.values() for jam in jam_list
+                if f"{sec}_{jam}" in skips]
         undone = total - len(done)
-        pct = len(done) / total * 100 if total else 0
+        pct = (len(done)/total*100) if total else 0
         msg = (
             f"📋 Ringkasan tugas {yesterday}\n"
             f"Selesai (✅): {len(done)}\n"
             f"Belum selesai (❌): {undone}\n"
             f"Ketepatan waktu: {pct:.1f}%\n\n"
             f"Contoh selesai: {', '.join(done[:5])}\n"
-            f"Contoh belum: {', '.join([f for f in done[:5]])}"
+            f"Contoh belum: {', '.join([f'{s} {j}' for s,j in (d.split() for d in done[:5])])}"
         )
         await context.bot.send_message(chat_id=chat_id, text=msg)
 
@@ -114,7 +111,6 @@ async def daily_summary(context: ContextTypes.DEFAULT_TYPE):
 # ----------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ /start: Mulai bot dan pilih jadwal """
     chat_id = update.effective_chat.id
     user_chats.add(chat_id)
     keyboard = [[
@@ -128,7 +124,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def reset_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ /reset: Reset semua tugas & job """
     chat_id = update.effective_chat.id
     for job in context.job_queue.get_jobs():
         if str(chat_id) in job.name:
@@ -137,10 +132,6 @@ async def reset_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔁 Semua tugas dan tanda telah direset.")
 
 async def show_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /jadwalaktif <pagi|siang|malam>:
-    Tampilkan daftar sub-menu beserta jam-jam yang masih aktif (❌).
-    """
     args = context.args
     if not args or args[0] not in TIMES:
         return await update.message.reply_text("Gunakan: /jadwalaktif <pagi|siang|malam>")
@@ -151,9 +142,9 @@ async def show_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     aktif = {}
     for section in SUBMENUS:
-        jam_list = [jam for jam in TIMES[cat] if f"{section}_{jam}" not in skips]
-        if jam_list:
-            aktif[section] = jam_list
+        jams = [jam for jam in TIMES[cat] if f"{section}_{jam}" not in skips]
+        if jams:
+            aktif[section] = jams
 
     if not aktif:
         return await update.message.reply_text(
@@ -177,7 +168,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     chat_id = query.message.chat.id
 
-    # 1) Main menu
+    # Kembali ke pilih kategori
+    if data == "go_start":
+        keyboard = [[
+            InlineKeyboardButton("Pagi", callback_data="main_pagi"),
+            InlineKeyboardButton("Siang", callback_data="main_siang"),
+            InlineKeyboardButton("Malam", callback_data="main_malam"),
+        ]]
+        return await query.edit_message_text(
+            "🕒 Mulai bot dan pilih jadwal:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    # 1) Menu kategori
     if data.startswith("main_"):
         waktu = data.split("_", 1)[1]
         btn_on  = InlineKeyboardButton(f"🔔 Aktifkan {waktu.capitalize()}", callback_data=f"activate_{waktu}")
@@ -187,13 +190,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             row = [InlineKeyboardButton(name, callback_data=f"sub_{waktu}_{name}")
                    for name in SUBMENUS[i:i+4]]
             keyboard.append(row)
+        keyboard.append([InlineKeyboardButton("🔙 Kembali", callback_data="go_start")])
         return await query.edit_message_text(
             f"⏰ Kategori: *{waktu.capitalize()}*\nPilih bagian, Aktifkan atau Reset:",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
-    # 2) Submenu toggle
+    # 2) Submenu bagian
     if data.startswith("sub_"):
         _, waktu, section = data.split("_", 2)
         marks = user_skips.get(chat_id, set())
@@ -204,6 +208,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 sym = "✅" if f"{section}_{jam}" in marks else "❌"
                 row.append(InlineKeyboardButton(f"{jam} {sym}", callback_data=f"toggle_{waktu}_{section}_{jam}"))
             keyboard.append(row)
+        keyboard.append([InlineKeyboardButton("🔙 Kembali", callback_data=f"main_{waktu}")])
         return await query.edit_message_text(
             f"🗂 Bagian: *{section}*\nKlik untuk toggle ❌/✅:",
             parse_mode="Markdown",
@@ -220,17 +225,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             marks.add(key)
 
-        # rebuild submenu keyboard
-        new_rows = []
+        # rebuild semua tombol termasuk Back
+        rows = []
         for i in range(0, len(TIMES[waktu]), 3):
             row = []
             for jm in TIMES[waktu][i:i+3]:
-                sym2 = "✅" if f"{section}_{jm}" in marks else "❌"
-                row.append(InlineKeyboardButton(f"{jm} {sym2}", callback_data=f"toggle_{waktu}_{section}_{jm}"))
-            new_rows.append(row)
+                sym = "✅" if f"{section}_{jm}" in marks else "❌"
+                row.append(InlineKeyboardButton(f"{jm} {sym}", callback_data=f"toggle_{waktu}_{section}_{jm}"))
+            rows.append(row)
+        rows.append([InlineKeyboardButton("🔙 Kembali", callback_data=f"main_{waktu}")])
 
-        return await query.edit_message_reply_markup(
-            reply_markup=InlineKeyboardMarkup(new_rows)
+        return await query.edit_message_text(
+            f"🗂 Bagian: *{section}*\nKlik untuk toggle ❌/✅:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(rows)
         )
 
     # 4) Activate all
@@ -250,7 +258,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if target < now:
                 target += datetime.timedelta(days=1)
 
-            # 4.1) schedule group_reminder 5 menit sebelum
+            # schedule group_reminder
             rem_time = target - datetime.timedelta(minutes=5)
             rem_utc = rem_time.astimezone(pytz.utc).time()
             name_gr = f"grp_{chat_id}_{jam.replace(':','')}"
@@ -263,7 +271,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 data={"chat_id": chat_id, "jam": jam}
             )
 
-            # 4.2) schedule check_overdue 20 menit setelah
+            # schedule check_overdue
             overdue_time = target + datetime.timedelta(minutes=20)
             delay = (overdue_time - now).total_seconds()
             name_co = f"chk_{chat_id}_{jam.replace(':','')}"
@@ -277,9 +285,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     data={"chat_id": chat_id, "jam": jam}
                 )
 
+        # kembali ke kategori dengan back
+        btn_back = InlineKeyboardButton("🔙 Kembali", callback_data=f"main_{waktu}")
         return await query.edit_message_text(
             f"✅ Reminder *{waktu.capitalize()}* diaktifkan untuk {len(jam_set)} jam.",
-            parse_mode="Markdown"
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[btn_back]])
         )
 
     # 5) Reset per kategori
@@ -288,16 +299,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         removed = 0
         for jam in TIMES[waktu]:
             for prefix in ("grp", "chk"):
-                job_name = f"{prefix}_{chat_id}_{jam.replace(':','')}"
-                for job in context.job_queue.get_jobs_by_name(job_name):
+                for job in context.job_queue.get_jobs_by_name(f"{prefix}_{chat_id}_{jam.replace(':','')}"):
                     job.schedule_removal()
                     removed += 1
-        # optional: clear skips for that category
         user_skips.pop(chat_id, None)
+        btn_back = InlineKeyboardButton("🔙 Kembali", callback_data="go_start")
         return await query.edit_message_text(
-            f"🔁 Reminder *{waktu.capitalize()}* direset.\n"
-            f"Total job dibatalkan: *{removed}*",
-            parse_mode="Markdown"
+            f"🔁 Reminder *{waktu.capitalize()}* direset.\nTotal job dibatalkan: *{removed}*",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[btn_back]])
         )
 
 # ----------------------
@@ -323,7 +333,6 @@ async def main():
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_error_handler(lambda u, c: logger.error("Error handling update", exc_info=c.error))
 
-    # start application & job queue
     await app.initialize()
     await app.start()
     await app.job_queue.start()
@@ -335,7 +344,6 @@ async def main():
         name="daily_summary"
     )
 
-    # webhook server
     web_app = web.Application()
     web_app["application"] = app
     web_app.add_routes([
@@ -350,7 +358,6 @@ async def main():
     port = int(os.environ.get("PORT", 8000))
     await web.TCPSite(runner, "0.0.0.0", port).start()
 
-    # keep alive
     while True:
         await asyncio.sleep(3600)
 
