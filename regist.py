@@ -133,10 +133,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                    for name in SUBMENUS[i:i+4]]
             keyboard.append(row)
         await query.edit_message_text(
-            text=(
-                f"⏰ Kategori: *{waktu.capitalize()}*\n"
-                "Pilih bagian, Aktifkan semua, atau Reset:"
-            ),
+            text=(f"⏰ Kategori: *{waktu.capitalize()}*\n" +
+                  "Pilih bagian, Aktifkan semua, atau Reset:"),
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
@@ -152,12 +150,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for jam in TIMES[waktu][i:i+3]:
                 key = f"{bagian}_{jam}"
                 sym = "✅" if key in marks else "❌"
-                row.append(
-                    InlineKeyboardButton(
-                        f"{jam} {sym}",
-                        callback_data=f"toggle_{waktu}_{bagian}_{jam}"
-                    )
-                )
+                row.append(InlineKeyboardButton(f"{jam} {sym}", callback_data=f"toggle_{waktu}_{bagian}_{jam}"))
             keyboard.append(row)
         await query.edit_message_text(
             text=f"🗂 Bagian: *{bagian}*\nKlik untuk toggle ❌/✅:",
@@ -181,72 +174,48 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for i in range(0, len(TIMES[waktu]), 3):
             row = []
             for jm in TIMES[waktu][i:i+3]:
-                k2 = f"{bagian}_{jm}"
-                sym2 = "✅" if k2 in marks else "❌"
-                row.append(
-                    InlineKeyboardButton(f"{jm} {sym2}", callback_data=f"toggle_{waktu}_{bagian}_{jm}")
-                )
+                sym2 = "✅" if f"{bagian}_{jm}" in marks else "❌"
+                row.append(InlineKeyboardButton(f"{jm} {sym2}", callback_data=f"toggle_{waktu}_{bagian}_{jm}"))
             new_rows.append(row)
-
-        await query.edit_message_reply_markup(
-            reply_markup=InlineKeyboardMarkup(new_rows)
-        )
+        await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(new_rows))
         return
 
     # Activate all for a time category
     if data.startswith("activate_"):
         waktu = data.split("_", 1)[1]
-        scheduled = 0
         jam_terjadwal = set()
-
         for bagian in SUBMENUS:
             for jam in TIMES[waktu]:
-                key = f"{bagian}_{jam}"
-                if chat_id in user_skips and key in user_skips[chat_id]:
+                if chat_id in user_skips and f"{bagian}_{jam}" in user_skips[chat_id]:
                     continue
                 jam_terjadwal.add(jam)
 
         now = datetime.datetime.now(timezone)
         for jam in jam_terjadwal:
-            h, m = map(int, jam.split(":"))
+            h, m = map(int, jam.split(':'))
             target = now.replace(hour=h, minute=m, second=0, microsecond=0)
             if target < now:
                 target += datetime.timedelta(days=1)
 
-            # schedule group reminder 5 minutes before
+            # schedule group reminder
             remind_at = target - datetime.timedelta(minutes=5)
             remind_at_utc = timezone.localize(remind_at).astimezone(pytz.utc).time()
-            grp_job_name = f"group_reminder_{chat_id}_{jam.replace(':', '')}"
-            for old in context.job_queue.get_jobs_by_name(grp_job_name):
-                old.schedule_removal()
-            context.job_queue.run_daily(
-                group_reminder,
-                time=remind_at_utc,
-                name=grp_job_name,
-                data={"chat_id": chat_id, "jam": jam}
-            )
+            grp_job = f"group_reminder_{chat_id}_{jam.replace(':','')}"
+            for old in context.job_queue.get_jobs_by_name(grp_job): old.schedule_removal()
+            context.job_queue.run_daily(group_reminder, time=remind_at_utc, name=grp_job, data={"chat_id": chat_id, "jam": jam})
 
-            # schedule overdue check 20 minutes after
+            # schedule overdue check
             overdue_time = target + datetime.timedelta(minutes=20)
             delay = (overdue_time - now).total_seconds()
-            check_name = f"overdue_check_{chat_id}_{jam.replace(':', '')}"
-            for old in context.job_queue.get_jobs_by_name(check_name):
-                old.schedule_removal()
+            chk_job = f"overdue_check_{chat_id}_{jam.replace(':','')}"
+            for old in context.job_queue.get_jobs_by_name(chk_job): old.schedule_removal()
             if delay > 0:
-                context.job_queue.run_once(
-                    check_overdue,
-                    when=delay,
-                    name=check_name,
-                    data={"chat_id": chat_id, "jam": jam}
-                )
-
-            scheduled += 1
+                context.job_queue.run_once(check_overdue, when=delay, name=chk_job, data={"chat_id": chat_id, "jam": jam})
 
         await query.edit_message_text(
             text=(
                 f"✅ Reminder *{waktu.capitalize()}* diaktifkan!\n"
-                f"Total jam terjadwal: *{scheduled}*\n\n"
-                "_✅ tidak diingatkan • ❌ akan diingatkan_"
+                f"Total jam terjadwal: *{len(jam_terjadwal)}*"
             ),
             parse_mode="Markdown"
         )
@@ -256,32 +225,21 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("reset_"):
         waktu = data.split("_", 1)[1]
         removed = 0
-        for bagian in SUBMENUS:
-            for jam in TIMES[waktu]:
-                nm = re.sub(r"\W+", "_", f"{bagian}_{waktu}_{jam}")
-                # group reminder
-                grp_job = f"group_reminder_{chat_id}_{jam.replace(':', '')}"
-                for job in context.job_queue.get_jobs_by_name(grp_job):
-                    job.schedule_removal()
-                    removed += 1
-                # overdue check
-                chk_job = f"overdue_check_{chat_id}_{jam.replace(':', '')}"
-                for job in context.job_queue.get_jobs_by_name(chk_job):
-                    job.schedule_removal()
-                    removed += 1
+        for jam in TIMES[waktu]:
+            grp_job = f"group_reminder_{chat_id}_{jam.replace(':','')}"
+            for job in context.job_queue.get_jobs_by_name(grp_job): job.schedule_removal(); removed += 1
+            chk_job = f"overdue_check_{chat_id}_{jam.replace(':','')}"
+            for job in context.job_queue.get_jobs_by_name(chk_job): job.schedule_removal(); removed += 1
         user_skips.pop(chat_id, None)
         await query.edit_message_text(
-            text=(
-                f"🔁 Reminder *{waktu.capitalize()}* direset."\n
-                f"Total job dibatalkan: *{removed}*"
-            ),
+            text=f"🔁 Reminder *{waktu.capitalize()}* direset.\nTotal job dibatalkan: *{removed}*",
             parse_mode="Markdown"
         )
         return
 
 async def reset_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    # remove all jobs
+    # remove all jobs containing chat_id
     for job in context.job_queue.get_jobs():
         if str(chat_id) in job.name:
             job.schedule_removal()
