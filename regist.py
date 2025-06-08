@@ -1,3 +1,4 @@
+# bot_jadwal.py
 import logging
 import datetime
 import pytz
@@ -38,8 +39,7 @@ timezone = pytz.timezone(os.environ.get("TZ", "Asia/Jakarta"))
 persistence = PicklePersistence(filepath="bot_data.pkl")
 user_skips = {}    # chat_id → set of "<section>_<jam>"
 user_pages = {}    # chat_id → current page per waktu
-# group reminder settings: chat_id → {waktu: bool}
-group_reminders = {}
+group_reminders = {}  # chat_id → {waktu: bool}
 
 # ----------------------
 # Schedule & Reminder Times
@@ -55,9 +55,9 @@ TIMES = {
 PAGE_SIZE = 10
 
 generic_reminder = {
-    "pagi":  "🌅 Pengingat pagi: gunakan /pagi untuk cek jadwal dan tandai tugas Anda!",
-    "siang": "🌞 Pengingat siang: gunakan /siang untuk cek jadwal dan tandai tugas Anda!",
-    "malam": "🌙 Pengingat malam: gunakan /malam untuk cek jadwal dan tandai tugas Anda!",
+    "pagi":  "🌅 Selamat pagi. Mohon periksa dan lengkapi jadwal melalui perintah /pagi.",
+    "siang": "🌞 Selamat siang. Silakan tinjau dan tandai tugas Anda dengan perintah /siang.",
+    "malam": "🌙 Selamat malam. Harap pastikan semua tugas telah dicek melalui perintah /malam.",
 }
 
 # ----------------------
@@ -134,9 +134,16 @@ async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
     data = context.job.data
     waktu = data["waktu"]
     chat_id = data["chat_id"]
+    now = datetime.datetime.now(timezone).strftime("%H:%M")
+
     logger.info(f"🔔 Reminder exec: sesi={waktu}, chat_id={chat_id}, time={datetime.datetime.now(timezone)}")
     if group_reminders.get(chat_id, {}).get(waktu):
-        await context.bot.send_message(chat_id=chat_id, text=generic_reminder[waktu])
+        reminder_text = generic_reminder[waktu]
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"{reminder_text}\n🕒 Waktu saat ini: *{now}*",
+            parse_mode="Markdown"
+        )
 
 async def notify_unchecked(context: ContextTypes.DEFAULT_TYPE):
     data = context.job.data
@@ -195,7 +202,6 @@ async def toggle_reminder_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
             grp[waktu] = on
 
             if on:
-                # Tambah job untuk reminder dan notify_unchecked
                 for ts in TIMES[waktu]:
                     h, m = map(int, ts.split(':'))
                     context.application.job_queue.run_daily(
@@ -222,7 +228,6 @@ async def toggle_reminder_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text("Perintah tidak dikenali.")
 
 async def waktu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Strip leading slash and bot username
     cmd = update.message.text.lstrip('/').split('@')[0]
     if cmd in TIMES:
         await show_schedule(update, context, waktu=cmd, page=0)
