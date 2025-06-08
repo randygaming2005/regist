@@ -142,6 +142,7 @@ async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
     data = context.job.data
     waktu = data["waktu"]
     chat_id = data["chat_id"]
+    logger.info(f"🔔 Reminder exec: sesi={waktu}, chat_id={chat_id}, time={datetime.datetime.now(timezone)}")
     if group_reminders.get(chat_id, {}).get(waktu):
         await context.bot.send_message(chat_id=chat_id, text=generic_reminder[waktu])
 
@@ -200,6 +201,28 @@ async def toggle_reminder_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
             grp = group_reminders.setdefault(cid, {k: False for k in TIMES})
             on = parts[0] == 'aktifkan'
             grp[waktu] = on
+
+            if on:
+                # Tambah job untuk reminder dan notify_unchecked
+                for ts in TIMES[waktu]:
+                    h, m = map(int, ts.split(':'))
+                    context.application.job_queue.run_daily(
+                        send_reminder,
+                        time=datetime.time(hour=h, minute=m, tzinfo=timezone),
+                        days=(0,1,2,3,4,5,6),
+                        name=f"r_{waktu}_{ts}_{cid}",
+                        data={"waktu": waktu, "chat_id": cid}
+                    )
+                    total_min = h*60 + m + 20
+                    nh, nm = divmod(total_min % (24*60), 60)
+                    context.application.job_queue.run_daily(
+                        notify_unchecked,
+                        time=datetime.time(hour=nh, minute=nm, tzinfo=timezone),
+                        days=(0,1,2,3,4,5,6),
+                        name=f"n_{waktu}_{ts}_{cid}",
+                        data={"waktu": waktu, "jam": ts, "chat_id": cid}
+                    )
+
             await update.message.reply_text(
                 f"✅ Pengingat {waktu} {'diaktifkan' if on else 'dinonaktifkan'} untuk grup."
             )
@@ -217,6 +240,7 @@ async def waktu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Setup Jobs & App
 # ----------------------
 async def start_jobqueue(app):
+    # Jadwal job untuk grup yang sudah aktif sebelum startup
     for cid, rem in group_reminders.items():
         for w, slots in TIMES.items():
             if not rem.get(w):
