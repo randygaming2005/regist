@@ -73,29 +73,26 @@ async def show_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE, wakt
     subs = SUBMENUS[start:end]
     total_pages = (len(SUBMENUS) - 1) // PAGE_SIZE + 1
 
-    # Minimal text: hanya judul atau spasi kosong
+    # Minimal text: hanya judul
     text = f"*Jadwal {waktu.capitalize()}*"
 
     # Build keyboard
     rows = []
     for sec in subs:
-        # Tombol utama jam pertama
         fjam = TIMES[waktu][0]
         key = f"{sec}_{fjam}"
         sym = '✅' if key in user_skips.get(chat_id, set()) else '❌'
         rows.append([InlineKeyboardButton(f"{sec} {fjam} {sym}", callback_data=f"toggle_{waktu}_{sec}_{fjam}_{page}")])
-        # Tombol jam selanjutnya
         small = []
         for jam in TIMES[waktu][1:]:
             key2 = f"{sec}_{jam}"
             sym2 = '✅' if key2 in user_skips.get(chat_id, set()) else '❌'
             small.append(InlineKeyboardButton(f"{jam} {sym2}", callback_data=f"toggle_{waktu}_{sec}_{jam}_{page}"))
-        # Bagi ke beberapa baris
         rows.append(small[:3])
         if len(small) > 3:
             rows.append(small[3:])
 
-    # Navigasi halaman
+    # Navigation
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton("⬅️", callback_data=f"nav_{waktu}_{page-1}"))
@@ -225,7 +222,8 @@ async def toggle_reminder_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text("Perintah tidak dikenali.")
 
 async def waktu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    cmd = update.message.text.lstrip('/')
+    # Strip leading slash and bot username
+    cmd = update.message.text.lstrip('/').split('@')[0]
     if cmd in TIMES:
         await show_schedule(update, context, waktu=cmd, page=0)
     else:
