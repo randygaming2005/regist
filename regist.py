@@ -1,4 +1,3 @@
-# bot_jadwal.py
 import logging
 import datetime
 import pytz
@@ -40,6 +39,8 @@ persistence = PicklePersistence(filepath="bot_data.pkl")
 user_skips = {}    # chat_id → set of "<section>_<jam>"
 user_pages = {}    # chat_id → current page per waktu
 group_reminders = {}  # chat_id → {waktu: bool}
+# new: store last topic thread_id for group
+group_threads = {}   # chat_id → message_thread_id (int)
 
 # ----------------------
 # Schedule & Reminder Times
@@ -73,7 +74,6 @@ async def show_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE, wakt
     subs = SUBMENUS[start:end]
     total_pages = (len(SUBMENUS) - 1) // PAGE_SIZE + 1
 
-    # Minimal text: hanya judul
     text = f"*Jadwal {waktu.capitalize()}*"
 
     # Build keyboard
@@ -128,21 +128,24 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_schedule(update, context, waktu=w, page=int(pg))
 
 # ----------------------
-# Reminder & Admin Notify
+# Reminder: initial & follow-up Notify
 # ----------------------
 async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
     data = context.job.data
     waktu = data["waktu"]
     chat_id = data["chat_id"]
     now = datetime.datetime.now(timezone).strftime("%H:%M")
+    thread_id = data.get("thread_id")
 
     logger.info(f"🔔 Reminder exec: sesi={waktu}, chat_id={chat_id}, time={datetime.datetime.now(timezone)}")
     if group_reminders.get(chat_id, {}).get(waktu):
         reminder_text = generic_reminder[waktu]
         await context.bot.send_message(
             chat_id=chat_id,
-            text=f"{reminder_text}\n🕒 Waktu saat ini: *{now}*",
-            parse_mode="Markdown"
+            text=f"{reminder_text}
+🕒 Waktu saat ini: *{now}*",
+            parse_mode="Markdown",
+            message_thread_id=thread_id if thread_id else None
         )
 
 async def notify_unchecked(context: ContextTypes.DEFAULT_TYPE):
@@ -150,95 +153,33 @@ async def notify_unchecked(context: ContextTypes.DEFAULT_TYPE):
     waktu = data["waktu"]
     jam = data["jam"]
     chat_id = data["chat_id"]
+    thread_id = data.get("thread_id")
     skips = user_skips.get(chat_id, set())
 
     unchecked_sections = [sec for sec in SUBMENUS if f"{sec}_{jam}" not in skips]
     if unchecked_sections:
-        admins = await context.bot.get_chat_administrators(chat_id)
-        for admin in admins:
-            if admin.user.is_bot:
-                continue
-            msg = (
-                f"⚠️ Jadwal *{waktu}* jam *{jam}* belum lengkap.\n\n"
-                f"Belum dichecklist: {', '.join(unchecked_sections)}.\n\n"
-                "Mohon dicek segera. 🙏"
-            )
-            try:
-                await context.bot.send_message(chat_id=admin.user.id, text=msg, parse_mode="Markdown")
-            except Exception as e:
-                logger.warning(f"Gagal kirim pesan ke admin {admin.user.id}: {e}")
+        msg = (
+            f"⚠️ Jadwal {waktu} jam {jam} belum lengkap.
+
+"
+            f"Belum dichecklist: {', '.join(unchecked_sections)}.
+
+"
+            "Mohon dicek segera. 🙏"
+        )
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=msg,
+            parse_mode="Markdown",
+            message_thread_id=thread_id if thread_id else None
+        )
 
 # ----------------------
 # Command Handlers
 # ----------------------
-async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    txt = (
-        "👋 Selamat datang di Bot Jadwal!\n"
-        "Gunakan /pagi, /siang, /malam untuk lihat jadwal.\n"
-        "Gunakan /aktifkan_pagi, /nonaktifkan_pagi (atau siang/malam) untuk mengelola pengingat grup.\n"
-        "/reset untuk reset checklistnya."
-    )
-    await update.message.reply_text(txt)
-
-async def cmd_waktu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    now = datetime.datetime.now(timezone)
-    await update.message.reply_text(now.strftime("%Y-%m-%d %H:%M:%S %Z"))
-
-async def reset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    cid = update.effective_chat.id
-    user_skips.pop(cid, None)
-    user_pages.pop(cid, None)
-    await update.message.reply_text("🔁 Checklist direset.")
-
-async def toggle_reminder_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    cid = update.effective_chat.id
-    cmd = update.message.text.lstrip('/').split('@')[0]
-    if cmd.endswith(('pagi','siang','malam')):
-        parts = cmd.split('_')
-        waktu = parts[1] if len(parts) == 2 else None
-        if waktu in TIMES:
-            grp = group_reminders.setdefault(cid, {k: False for k in TIMES})
-            on = parts[0] == 'aktifkan'
-            grp[waktu] = on
-
-            if on:
-                for ts in TIMES[waktu]:
-                    h, m = map(int, ts.split(':'))
-                    context.application.job_queue.run_daily(
-                        send_reminder,
-                        time=datetime.time(hour=h, minute=m, tzinfo=timezone),
-                        days=(0,1,2,3,4,5,6),
-                        name=f"r_{waktu}_{ts}_{cid}",
-                        data={"waktu": waktu, "chat_id": cid}
-                    )
-                    total_min = h*60 + m + 20
-                    nh, nm = divmod(total_min % (24*60), 60)
-                    context.application.job_queue.run_daily(
-                        notify_unchecked,
-                        time=datetime.time(hour=nh, minute=nm, tzinfo=timezone),
-                        days=(0,1,2,3,4,5,6),
-                        name=f"n_{waktu}_{ts}_{cid}",
-                        data={"waktu": waktu, "jam": ts, "chat_id": cid}
-                    )
-
-            await update.message.reply_text(
-                f"✅ Pengingat {waktu} {'diaktifkan' if on else 'dinonaktifkan'} untuk grup."
-            )
-            return
-    await update.message.reply_text("Perintah tidak dikenali.")
-
-async def waktu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    cmd = update.message.text.lstrip('/').split('@')[0]
-    if cmd in TIMES:
-        await show_schedule(update, context, waktu=cmd, page=0)
-    else:
-        await update.message.reply_text("Perintah tidak dikenali.")
-
-# ----------------------
-# Setup Jobs & App
-# ----------------------
 async def start_jobqueue(app):
     for cid, rem in group_reminders.items():
+        thread_id = group_threads.get(cid)
         for w, slots in TIMES.items():
             if not rem.get(w):
                 continue
@@ -249,7 +190,7 @@ async def start_jobqueue(app):
                     time=datetime.time(hour=h, minute=m, tzinfo=timezone),
                     days=(0,1,2,3,4,5,6),
                     name=f"r_{w}_{ts}_{cid}",
-                    data={"waktu": w, "chat_id": cid}
+                    data={"waktu": w, "chat_id": cid, "thread_id": thread_id}
                 )
                 total_min = h*60 + m + 20
                 nh, nm = divmod(total_min % (24*60), 60)
@@ -258,7 +199,7 @@ async def start_jobqueue(app):
                     time=datetime.time(hour=nh, minute=nm, tzinfo=timezone),
                     days=(0,1,2,3,4,5,6),
                     name=f"n_{w}_{ts}_{cid}",
-                    data={"waktu": w, "jam": ts, "chat_id": cid}
+                    data={"waktu": w, "jam": ts, "chat_id": cid, "thread_id": thread_id}
                 )
     await app.job_queue.start()
     logger.info("JobQueue started")
