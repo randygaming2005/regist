@@ -54,7 +54,6 @@ TIMES = {
 }
 PAGE_SIZE = 10
 
-# friendly reminder messages per waktu
 generic_reminder = {
     "pagi":  "🌅 Pengingat pagi: gunakan /pagi untuk cek jadwal dan tandai tugas Anda!",
     "siang": "🌞 Pengingat siang: gunakan /siang untuk cek jadwal dan tandai tugas Anda!",
@@ -66,7 +65,6 @@ generic_reminder = {
 # ----------------------
 async def show_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE, waktu="pagi", page=0):
     chat_id = update.effective_chat.id
-    skips = user_skips.get(chat_id, set())
     user_pages[chat_id] = page
 
     # Pagination
@@ -75,31 +73,29 @@ async def show_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE, wakt
     subs = SUBMENUS[start:end]
     total_pages = (len(SUBMENUS) - 1) // PAGE_SIZE + 1
 
-    # Build text
-    header = f"*⏰ Jadwal {waktu.capitalize()} (Halaman {page+1}/{total_pages})*"
-    lines = [header, ""]
-    for sec in subs:
-        jam_stat = [f"{j} {'✅' if f'{sec}_{j}' in skips else '❌'}" for j in TIMES[waktu]]
-        lines.append(f"*{sec}*: {', '.join(jam_stat)}")
-    text = "\n".join(lines)
+    # Minimal text: hanya judul atau spasi kosong
+    text = f"*Jadwal {waktu.capitalize()}*"
 
     # Build keyboard
     rows = []
     for sec in subs:
+        # Tombol utama jam pertama
         fjam = TIMES[waktu][0]
         key = f"{sec}_{fjam}"
-        sym = '✅' if key in skips else '❌'
+        sym = '✅' if key in user_skips.get(chat_id, set()) else '❌'
         rows.append([InlineKeyboardButton(f"{sec} {fjam} {sym}", callback_data=f"toggle_{waktu}_{sec}_{fjam}_{page}")])
+        # Tombol jam selanjutnya
         small = []
         for jam in TIMES[waktu][1:]:
             key2 = f"{sec}_{jam}"
-            sym2 = '✅' if key2 in skips else '❌'
+            sym2 = '✅' if key2 in user_skips.get(chat_id, set()) else '❌'
             small.append(InlineKeyboardButton(f"{jam} {sym2}", callback_data=f"toggle_{waktu}_{sec}_{jam}_{page}"))
+        # Bagi ke beberapa baris
         rows.append(small[:3])
         if len(small) > 3:
             rows.append(small[3:])
 
-    # nav
+    # Navigasi halaman
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton("⬅️", callback_data=f"nav_{waktu}_{page-1}"))
@@ -229,7 +225,7 @@ async def toggle_reminder_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text("Perintah tidak dikenali.")
 
 async def waktu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    cmd = update.message.text.lstrip('/').split('@')[0]
+    cmd = update.message.text.lstrip('/')
     if cmd in TIMES:
         await show_schedule(update, context, waktu=cmd, page=0)
     else:
@@ -239,7 +235,6 @@ async def waktu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Setup Jobs & App
 # ----------------------
 async def start_jobqueue(app):
-    # Jadwal job untuk grup yang sudah aktif sebelum startup
     for cid, rem in group_reminders.items():
         for w, slots in TIMES.items():
             if not rem.get(w):
