@@ -45,8 +45,7 @@ group_reminders = {}
 # Schedule & Reminder Times
 # ----------------------
 SUBMENUS = [
-    "DWT", "BG", "DWL", "NG", "TG88", "TTGL", "KTT", "TTGG", "MGHK", "AREA",
-    "PWNT", "KST", "KINGJR", "VITO", "HOLLY", "INDOGG", "DRAGON", "CEME", "ARENA", "CITI"
+    "DWT", "BG", "DWL", "NG", "TG88", "TTGL", "KTT", "TTGG"
 ]
 TIMES = {
     "pagi":   ["08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00"],
