@@ -68,9 +68,12 @@ async def show_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE, wakt
     end = start + PAGE_SIZE
     subs = SUBMENUS[start:end]
 
-    text = f"*Jadwal {waktu.capitalize()}*
+    text = (
+        f"*Jadwal {waktu.capitalize()}*
 
-Pilih checklist atau gunakan tombol di bawah untuk mengaktifkan kategori atau reset hari ini."
+"
+        "Pilih checklist atau gunakan tombol di bawah untuk mengaktifkan kategori atau reset hari ini."
+    )
     rows = []
     # Sections with toggles and activate button
     for sec in subs:
