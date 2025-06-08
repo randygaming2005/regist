@@ -77,7 +77,7 @@ async def show_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE, wakt
 
     text = "\n".join(lines)
 
-    # Build keyboard with grouped rows per submenu and spacer
+        # Build keyboard with grouped rows per submenu and spacer
     rows = []
     for sec in current_submenus:
         # rows of buttons for this submenu
@@ -85,14 +85,18 @@ async def show_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE, wakt
         for jam in TIMES[waktu]:
             key = f"{sec}_{jam}"
             sym = "✅" if key in skips else "❌"
-            btns.append(InlineKeyboardButton(f"{sec[:4]} {jam} {sym}", callback_data=f"toggle_{waktu}_{sec}_{jam}_{page}"))
-        # chunk per 3
+            btns.append(InlineKeyboardButton(
+                f"{sec[:4]} {jam} {sym}",
+                callback_data=f"toggle_{waktu}_{sec}_{jam}_{page}"
+            ))
+        # chunk per 3 and add to rows
         for i in range(0, len(btns), 3):
             rows.append(btns[i:i+3])
-        # spacer row (zero-width space)
-        rows.append([InlineKeyboardButton("\u200b", callback_data="noop")])
+        # spacer row with a single separator button
+        rows.append([InlineKeyboardButton("――――――――――", callback_data="noop")])
 
     # Navigation buttons
+    nav = []
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton("⬅️ Sebelumnya", callback_data=f"nav_{waktu}_{page-1}"))
