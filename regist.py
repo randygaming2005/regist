@@ -1,11 +1,10 @@
 import logging
 import datetime
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 import pytz
 import os
 import asyncio
 from aiohttp import web
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -100,11 +99,15 @@ async def show_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE, wakt
         rows.append(small[:3])
         if len(small) > 3:
             rows.append(small[3:])
+
     # nav
     nav = []
-    if page>0: nav.append(InlineKeyboardButton("⬅️", callback_data=f"nav_{waktu}_{page-1}"))
-    if end<len(SUBMENUS): nav.append(InlineKeyboardButton("➡️", callback_data=f"nav_{waktu}_{page+1}"))
-    if nav: rows.append(nav)
+    if page > 0:
+        nav.append(InlineKeyboardButton("⬅️", callback_data=f"nav_{waktu}_{page-1}"))
+    if end < len(SUBMENUS):
+        nav.append(InlineKeyboardButton("➡️", callback_data=f"nav_{waktu}_{page+1}"))
+    if nav:
+        rows.append(nav)
 
     if update.message:
         await update.message.reply_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(rows))
@@ -119,15 +122,17 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     data = q.data
     if data.startswith("toggle_"):
-        _,w,sec,j,pg = data.split("_",4)
+        _, w, sec, j, pg = data.split("_", 4)
         cid = q.message.chat.id
         key = f"{sec}_{j}"
-        skips = user_skips.setdefault(cid,set())
-        if key in skips: skips.remove(key)
-        else: skips.add(key)
-        await show_schedule(update,context,w,page=int(pg))
+        skips = user_skips.setdefault(cid, set())
+        if key in skips:
+            skips.remove(key)
+        else:
+            skips.add(key)
+        await show_schedule(update, context, waktu=w, page=int(pg))
     elif data.startswith("nav_"):
-        _,w,pg = data.split("_",2)
+        _, w, pg = data.split("_", 2)
         await show_schedule(update, context, waktu=w, page=int(pg))
 
 # ----------------------
@@ -181,36 +186,43 @@ async def cmd_waktu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def reset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cid = update.effective_chat.id
-    user_skips.pop(cid,None)
-    user_pages.pop(cid,None)
+    user_skips.pop(cid, None)
+    user_pages.pop(cid, None)
     await update.message.reply_text("🔁 Checklist direset.")
 
 async def toggle_reminder_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cid = update.effective_chat.id
-    cmd = update.message.text.lstrip('/').lower()
-    parts = cmd.split('_')
-    if len(parts)!=2 or parts[1] not in TIMES:
-        return
-    waktu = parts[1]
-    grp = group_reminders.setdefault(cid, {k: False for k in TIMES})
-    on = parts[0] == 'aktifkan'
-    grp[waktu] = on
-    await update.message.reply_text(
-        f"✅ Pengingat {waktu} {'diaktifkan' if on else 'dinonaktifkan'} untuk grup."
-    )
+    cmd = update.message.text.lstrip('/').split('@')[0]
+    if cmd.endswith(('pagi','siang','malam')):
+        parts = cmd.split('_')
+        waktu = parts[1] if len(parts) == 2 else None
+        if waktu in TIMES:
+            grp = group_reminders.setdefault(cid, {k: False for k in TIMES})
+            on = parts[0] == 'aktifkan'
+            grp[waktu] = on
+            await update.message.reply_text(
+                f"✅ Pengingat {waktu} {'diaktifkan' if on else 'dinonaktifkan'} untuk grup."
+            )
+            return
+    await update.message.reply_text("Perintah tidak dikenali.")
+
+async def waktu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cmd = update.message.text.lstrip('/').split('@')[0]
+    if cmd in TIMES:
+        await show_schedule(update, context, waktu=cmd, page=0)
+    else:
+        await update.message.reply_text("Perintah tidak dikenali.")
 
 # ----------------------
 # Setup Jobs & App
 # ----------------------
 async def start_jobqueue(app):
-    # schedule reminders and admin notifications
     for cid, rem in group_reminders.items():
         for w, slots in TIMES.items():
             if not rem.get(w):
                 continue
             for ts in slots:
                 h, m = map(int, ts.split(':'))
-                # normal reminder
                 app.job_queue.run_daily(
                     send_reminder,
                     time=datetime.time(hour=h, minute=m, tzinfo=timezone),
@@ -218,7 +230,6 @@ async def start_jobqueue(app):
                     name=f"r_{w}_{ts}_{cid}",
                     data={"waktu": w, "chat_id": cid}
                 )
-                # notify 20 minutes later
                 total_min = h*60 + m + 20
                 nh, nm = divmod(total_min % (24*60), 60)
                 app.job_queue.run_daily(
@@ -248,15 +259,10 @@ async def main():
         .post_init(start_jobqueue)\
         .build()
 
-    # handlers
     app.add_handler(CommandHandler("start", start_cmd))
-    app.add_handler(CommandHandler(["pagi","siang","malam"], 
-        lambda u,c: show_schedule(u,c,waktu=u.message.text.lstrip('/'), page=0)
-    ))
-    app.add_handler(CommandHandler([
-        "aktifkan_pagi","aktifkan_siang","aktifkan_malam",
-        "nonaktifkan_pagi","nonaktifkan_siang","nonaktifkan_malam"
-    ], toggle_reminder_cmd))
+    app.add_handler(CommandHandler(["aktifkan_pagi","aktifkan_siang","aktifkan_malam",
+                                     "nonaktifkan_pagi","nonaktifkan_siang","nonaktifkan_malam"], toggle_reminder_cmd))
+    app.add_handler(CommandHandler(["pagi","siang","malam"], waktu_cmd))
     app.add_handler(CommandHandler("reset", reset_cmd))
     app.add_handler(CommandHandler("waktu", cmd_waktu))
     app.add_handler(CallbackQueryHandler(button))
