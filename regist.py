@@ -61,23 +61,27 @@ async def show_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE, wakt
     skips = user_skips.get(chat_id, set())
     user_pages[chat_id] = page
 
+    # Paging submenus
     start = page * PAGE_SIZE
     end = start + PAGE_SIZE
     current_submenus = SUBMENUS[start:end]
 
-    lines = [f"*\u23f0 Jadwal Kategori: {waktu.capitalize()} (Halaman {page+1}/{(len(SUBMENUS)-1)//PAGE_SIZE+1})*\n"]
+    # Build message text with clear spacing
+    total_pages = (len(SUBMENUS) - 1) // PAGE_SIZE + 1
+    lines = [f"*⏰ Jadwal Kategori: {waktu.capitalize()} (Halaman {page+1}/{total_pages})*", ""]
     for sec in current_submenus:
-        jam_status = []
-        for jam in TIMES[waktu]:
-            sym = "\u2705" if f"{sec}_{jam}" in skips else "\u274c"
-            jam_status.append(f"{jam} {sym}")
-        lines.append(f"*{sec}*:\n{'   '.join(jam_status)}")
+        # Status per jam
+        jam_status = [f"{jam} {'✅' if f'{sec}_{jam}' in skips else '❌'}" for jam in TIMES[waktu]]
+        lines.append(f"*{sec}*:")
+        lines.append("   " + "   ".join(jam_status))
+        lines.append("")  # add blank line between submenus
 
+    # Build inline keyboard
     buttons = []
     for sec in current_submenus:
         for jam in TIMES[waktu]:
             key = f"{sec}_{jam}"
-            sym = "\u2705" if key in skips else "\u274c"
+            sym = "✅" if key in skips else "❌"
             buttons.append(
                 InlineKeyboardButton(
                     f"{sec[:4]} {jam} {sym}",
@@ -86,11 +90,12 @@ async def show_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE, wakt
             )
     rows = [buttons[i:i+3] for i in range(0, len(buttons), 3)]
 
+    # Navigation buttons
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton("\u2b05\ufe0f Sebelumnya", callback_data=f"nav_{waktu}_{page-1}"))
+        nav.append(InlineKeyboardButton("⬅️ Sebelumnya", callback_data=f"nav_{waktu}_{page-1}"))
     if end < len(SUBMENUS):
-        nav.append(InlineKeyboardButton("\u27a1\ufe0f Selanjutnya", callback_data=f"nav_{waktu}_{page+1}"))
+        nav.append(InlineKeyboardButton("➡️ Selanjutnya", callback_data=f"nav_{waktu}_{page+1}"))
     if nav:
         rows.append(nav)
 
@@ -144,11 +149,11 @@ async def reset_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_skips.pop(chat_id, None)
     user_pages.pop(chat_id, None)
-    await update.message.reply_text("\ud83d\udd01 Semua tanda tugas telah direset.")
+    await update.message.reply_text("🔁 Semua tanda tugas telah direset.")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        "\ud83d\udc4b Selamat datang!\n\n"
+        "👋 Selamat datang!\n\n"
         "Gunakan perintah berikut:\n"
         "/pagi - Jadwal Pagi\n"
         "/siang - Jadwal Siang\n"
@@ -164,8 +169,9 @@ async def handle_root(request):
     return web.Response(text="Bot is running")
 
 async def handle_webhook(request):
-    app = request.app['application']
     data = await request.json()
+    logger.info("Webhook got update: %s", data)
+    app = request.app['application']
     upd = Update.de_json(data, app.bot)
     await app.update_queue.put(upd)
     return web.Response()
@@ -189,14 +195,12 @@ async def main():
         web.get('/', handle_root),
         web.post(WEBHOOK_PATH, handle_webhook)
     ])
-
     if WEBHOOK_URL:
         await app.bot.set_webhook(WEBHOOK_URL)
 
     runner = web.AppRunner(web_app)
     await runner.setup()
     await web.TCPSite(runner, '0.0.0.0', PORT).start()
-
     while True:
         await asyncio.sleep(3600)
 
