@@ -23,10 +23,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-TOKEN = os.environ.get("TOKEN", "YOUR_BOT_TOKEN_HERE")
-WEBHOOK_PATH = f"/{TOKEN}"
+TOKEN = os.environ.get("TOKEN")
 WEBHOOK_URL_BASE = os.environ.get("WEBHOOK_URL_BASE")
+WEBHOOK_PATH = f"/{TOKEN}"
 WEBHOOK_URL = f"{WEBHOOK_URL_BASE}{WEBHOOK_PATH}" if WEBHOOK_URL_BASE else None
+PORT = int(os.environ.get("PORT", 8000))
 
 # ----------------------
 # Persistence & State
@@ -50,7 +51,7 @@ TIMES = {
     "malam":  ["23:00", "00:00", "01:00", "02:00", "03:00", "04:00", "05:00"]
 }
 
-PAGE_SIZE = 5  # number of sub-menus per page
+PAGE_SIZE = 5
 
 # ----------------------
 # Helper: Show Schedule with Pagination
@@ -60,41 +61,36 @@ async def show_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE, wakt
     skips = user_skips.get(chat_id, set())
     user_pages[chat_id] = page
 
-    # Paging submenus
     start = page * PAGE_SIZE
     end = start + PAGE_SIZE
     current_submenus = SUBMENUS[start:end]
 
-    # Build message text
-    lines = [f"*⏰ Jadwal Kategori: {waktu.capitalize()} (Halaman {page+1}/{(len(SUBMENUS)-1)//PAGE_SIZE+1})*\n"]
+    lines = [f"*\u23f0 Jadwal Kategori: {waktu.capitalize()} (Halaman {page+1}/{(len(SUBMENUS)-1)//PAGE_SIZE+1})*\n"]
     for sec in current_submenus:
         jam_status = []
         for jam in TIMES[waktu]:
-            sym = "✅" if f"{sec}_{jam}" in skips else "❌"
+            sym = "\u2705" if f"{sec}_{jam}" in skips else "\u274c"
             jam_status.append(f"{jam} {sym}")
         lines.append(f"*{sec}*:\n{'   '.join(jam_status)}")
 
-    # Build inline keyboard
     buttons = []
     for sec in current_submenus:
         for jam in TIMES[waktu]:
             key = f"{sec}_{jam}"
-            sym = "✅" if key in skips else "❌"
+            sym = "\u2705" if key in skips else "\u274c"
             buttons.append(
                 InlineKeyboardButton(
                     f"{sec[:4]} {jam} {sym}",
                     callback_data=f"toggle_{waktu}_{sec}_{jam}_{page}"
                 )
             )
-    # Arrange 3 buttons per row
     rows = [buttons[i:i+3] for i in range(0, len(buttons), 3)]
 
-    # Navigation buttons
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton("⬅️ Sebelumnya", callback_data=f"nav_{waktu}_{page-1}"))
+        nav.append(InlineKeyboardButton("\u2b05\ufe0f Sebelumnya", callback_data=f"nav_{waktu}_{page-1}"))
     if end < len(SUBMENUS):
-        nav.append(InlineKeyboardButton("➡️ Selanjutnya", callback_data=f"nav_{waktu}_{page+1}"))
+        nav.append(InlineKeyboardButton("\u27a1\ufe0f Selanjutnya", callback_data=f"nav_{waktu}_{page+1}"))
     if nav:
         rows.append(nav)
 
@@ -133,7 +129,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_schedule(update, context, waktu=waktu, page=int(page))
 
 # ----------------------
-# Commands to Start Each Category
+# Commands
 # ----------------------
 async def cmd_pagi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await show_schedule(update, context, waktu="pagi", page=0)
@@ -148,7 +144,18 @@ async def reset_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_skips.pop(chat_id, None)
     user_pages.pop(chat_id, None)
-    await update.message.reply_text("🔁 Semua tanda tugas telah direset.")
+    await update.message.reply_text("\ud83d\udd01 Semua tanda tugas telah direset.")
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "\ud83d\udc4b Selamat datang!\n\n"
+        "Gunakan perintah berikut:\n"
+        "/pagi - Jadwal Pagi\n"
+        "/siang - Jadwal Siang\n"
+        "/malam - Jadwal Malam\n"
+        "/reset - Reset checklist\n"
+    )
+    await update.message.reply_text(text)
 
 # ----------------------
 # Webhook & App Initialization
@@ -165,6 +172,7 @@ async def handle_webhook(request):
 
 async def main():
     app = ApplicationBuilder().token(TOKEN).persistence(persistence).build()
+    app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("pagi", cmd_pagi))
     app.add_handler(CommandHandler("siang", cmd_siang))
     app.add_handler(CommandHandler("malam", cmd_malam))
@@ -175,19 +183,19 @@ async def main():
     await app.start()
     await app.job_queue.start()
 
-    # Webhook setup
     web_app = web.Application()
     web_app['application'] = app
     web_app.add_routes([
         web.get('/', handle_root),
         web.post(WEBHOOK_PATH, handle_webhook)
     ])
+
     if WEBHOOK_URL:
         await app.bot.set_webhook(WEBHOOK_URL)
 
     runner = web.AppRunner(web_app)
     await runner.setup()
-    await web.TCPSite(runner, '0.0.0.0', int(os.environ.get('PORT', 8000))).start()
+    await web.TCPSite(runner, '0.0.0.0', PORT).start()
 
     while True:
         await asyncio.sleep(3600)
