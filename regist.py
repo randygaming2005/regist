@@ -42,8 +42,8 @@ timezone = pytz.timezone("Asia/Jakarta")
 # Submenus & Times
 # ----------------------
 SUBMENUS = [
-    "DWT", "BG", "DWL", "DST", "KRM", "BRK", "PRW", "RJN", "STP", "PNR", 
-    "NMR", "CKL", "KRT", "LKS", "JMP", "TRG", "SJR", "GNG", "MTN", "BDN"
+    "DWT", "BG", "DWL", "NG", "TG88", "TTGL", "KTT", "TTGG", "MGHK", "AREA", 
+    "PWNT", "KST", "KINGJR", "VITO", "HOLY", "INDOGG", "DRAGON", "CEME", "ARENA", "CITI"
 ]
 TIMES = {
     "pagi":   ["08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00"],
