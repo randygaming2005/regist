@@ -68,7 +68,7 @@ async def show_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE, wakt
     end = start + PAGE_SIZE
     subs = SUBMENUS[start:end]
 
-    text = (
+        text = (
         f"*Jadwal {waktu.capitalize()}*
 
 "
