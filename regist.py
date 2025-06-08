@@ -49,12 +49,12 @@ SUBMENUS = [
 TIMES = {
     "pagi":   ["08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00"],
     "siang":  ["15:00", "16:00", "17:00", "18:00", "19:00", "20:00", "21:00"],
-    "malam":  ["23:00", "00:00", "01:00", "02:00", "03:00", "04:00", "05:00"]
+    "malam":  ["22:00", "23:00", "00:00", "01:00", "02:00", "03:00", "04:00"]
 }
 PAGE_SIZE = 5
 
 # ----------------------
-# Helper: Show Schedule with Pagination and Spacing
+# Helper: Show Schedule with New Layout
 # ----------------------
 async def show_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE, waktu="pagi", page=0):
     chat_id = update.effective_chat.id
@@ -68,35 +68,47 @@ async def show_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE, wakt
     total_pages = (len(SUBMENUS) - 1) // PAGE_SIZE + 1
 
     # Build message text
-    lines = [f"*⏰ Jadwal Kategori: {waktu.capitalize()} (Halaman {page+1}/{total_pages})*", ""]
+    header = f"*⏰ Jadwal Kategori: {waktu.capitalize()} (Halaman {page+1}/{total_pages})*"
+    lines = [header, ""]
     for sec in current_submenus:
         jam_status = [f"{jam} {'✅' if f'{sec}_{jam}' in skips else '❌'}" for jam in TIMES[waktu]]
         lines.append(f"*{sec}*:")
         lines.append("   " + "   ".join(jam_status))
-        lines.append("")  # blank line separator
+        lines.append("")
 
     text = "\n".join(lines)
 
-            # Build keyboard with grouped rows per submenu and single full-width spacer
+    # Build inline keyboard with desired layout
     rows = []
     for sec in current_submenus:
-        btns = []
-        for jam in TIMES[waktu]:
+        # Row 1: big full-width button for first jam
+        jam_first = TIMES[waktu][0]
+        key = f"{sec}_{jam_first}"
+        sym = "✅" if key in skips else "❌"
+        rows.append([
+            InlineKeyboardButton(
+                f"{sec} {jam_first} {sym}",
+                callback_data=f"toggle_{waktu}_{sec}_{jam_first}_{page}"
+            )
+        ])
+        # Rows 2 & 3: small buttons for remaining jams
+        small = []
+        for jam in TIMES[waktu][1:]:
             key = f"{sec}_{jam}"
             sym = "✅" if key in skips else "❌"
-            btns.append(InlineKeyboardButton(
-                f"{sec[:4]} {jam} {sym}",
-                callback_data=f"toggle_{waktu}_{sec}_{jam}_{page}"
-            ))
-        # chunk per 3 and add each row
-        for i in range(0, len(btns), 3):
-            rows.append(btns[i:i+3])
-        # single full-width spacer button for visual separation
-        
+            small.append(
+                InlineKeyboardButton(
+                    f"{jam} {sym}",
+                    callback_data=f"toggle_{waktu}_{sec}_{jam}_{page}"
+                )
+            )
+        # Split into two rows: first 3, then rest
+        rows.append(small[:3])
+        if len(small) > 3:
+            rows.append(small[3:])
+        # Blank line separation in text already handles spacing
 
     # Navigation buttons
-    nav = []
-    nav = []
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton("⬅️ Sebelumnya", callback_data=f"nav_{waktu}_{page-1}"))
@@ -119,10 +131,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = query.data
 
-    # no-op spacer
     if data == "noop":
         return
-
     if data.startswith("toggle_"):
         _, waktu, sec, jam, page = data.split("_", 4)
         page = int(page)
@@ -134,7 +144,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             skips.add(key)
         await show_schedule(update, context, waktu=waktu, page=page)
-
     elif data.startswith("nav_"):
         _, waktu, page = data.split("_", 2)
         await show_schedule(update, context, waktu=waktu, page=int(page))
@@ -149,7 +158,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/pagi - Tampilkan jadwal pagi\n"
         "/siang - Tampilkan jadwal siang\n"
         "/malam - Tampilkan jadwal malam\n"
-        "/reset - Reset semua tanda checklist\n"
+        "/reset - Reset checklist\n"
     )
     await update.message.reply_text(welcome)
 
@@ -207,7 +216,6 @@ async def main():
     runner = web.AppRunner(web_app)
     await runner.setup()
     await web.TCPSite(runner, '0.0.0.0', PORT).start()
-
     while True:
         await asyncio.sleep(3600)
 
