@@ -38,7 +38,8 @@ timezone = pytz.timezone(os.environ.get("TZ", "Asia/Jakarta"))
 persistence = PicklePersistence(filepath="bot_data.pkl")
 user_skips = {}    # chat_id → set of "<section>_<jam>"
 user_pages = {}    # chat_id → current page per waktu
-group_reminders = {}  # chat_id → {waktu: bool}
+# group_reminders: chat_id → {waktu: {"enabled": bool, "thread_id": int}}
+group_reminders = {}
 
 # ----------------------
 # Schedule & Reminder Times
@@ -70,32 +71,24 @@ async def show_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE, wakt
     start = page * PAGE_SIZE
     end = start + PAGE_SIZE
     subs = SUBMENUS[start:end]
-    total_pages = (len(SUBMENUS) - 1) // PAGE_SIZE + 1
 
-    # Minimal text: hanya judul
     text = f"*Jadwal {waktu.capitalize()}*"
 
     # Build keyboard
     rows = []
     for sec in subs:
-        fjam = TIMES[waktu][0]
-        key = f"{sec}_{fjam}"
-        sym = '✅' if key in user_skips.get(chat_id, set()) else '❌'
-        rows.append([InlineKeyboardButton(f"{sec} {fjam} {sym}", callback_data=f"toggle_{waktu}_{sec}_{fjam}_{page}")])
-        small = []
-        for jam in TIMES[waktu][1:]:
-            key2 = f"{sec}_{jam}"
-            sym2 = '✅' if key2 in user_skips.get(chat_id, set()) else '❌'
-            small.append(InlineKeyboardButton(f"{jam} {sym2}", callback_data=f"toggle_{waktu}_{sec}_{jam}_{page}"))
-        rows.append(small[:3])
-        if len(small) > 3:
-            rows.append(small[3:])
+        for idx, jam in enumerate(TIMES[waktu]):
+            key = f"{sec}_{jam}"
+            sym = '✅' if key in user_skips.get(chat_id, set()) else '❌'
+            label = f"{sec} {jam} {sym}" if idx == 0 else f"{jam} {sym}"
+            rows.append([InlineKeyboardButton(label, callback_data=f"toggle_{waktu}_{sec}_{jam}_{page}")])
 
     # Navigation
     nav = []
+    total_pages = (len(SUBMENUS) - 1) // PAGE_SIZE
     if page > 0:
         nav.append(InlineKeyboardButton("⬅️", callback_data=f"nav_{waktu}_{page-1}"))
-    if end < len(SUBMENUS):
+    if page < total_pages:
         nav.append(InlineKeyboardButton("➡️", callback_data=f"nav_{waktu}_{page+1}"))
     if nav:
         rows.append(nav)
@@ -127,45 +120,45 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_schedule(update, context, waktu=w, page=int(pg))
 
 # ----------------------
-# Reminder & Admin Notify
+# Reminder & Notification
 # ----------------------
 async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
     data = context.job.data
     waktu = data["waktu"]
     chat_id = data["chat_id"]
+    thread_id = data.get("thread_id")
     now = datetime.datetime.now(timezone).strftime("%H:%M")
 
-    logger.info(f"🔔 Reminder exec: sesi={waktu}, chat_id={chat_id}, time={datetime.datetime.now(timezone)}")
-    if group_reminders.get(chat_id, {}).get(waktu):
-        reminder_text = generic_reminder[waktu]
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=f"{reminder_text}\n🕒 Waktu saat ini: *{now}*",
-            parse_mode="Markdown"
-        )
+    logger.info(f"🔔 Reminder: sesi={waktu}, chat_id={chat_id}, time={now}")
+    reminder_text = generic_reminder[waktu]
+    await context.bot.send_message(
+        chat_id=chat_id,
+        message_thread_id=thread_id,
+        text=f"{reminder_text}\n🕒 Waktu saat ini: *{now}*",
+        parse_mode="Markdown"
+    )
 
 async def notify_unchecked(context: ContextTypes.DEFAULT_TYPE):
     data = context.job.data
     waktu = data["waktu"]
     jam = data["jam"]
     chat_id = data["chat_id"]
+    thread_id = data.get("thread_id")
     skips = user_skips.get(chat_id, set())
 
     unchecked_sections = [sec for sec in SUBMENUS if f"{sec}_{jam}" not in skips]
     if unchecked_sections:
-        admins = await context.bot.get_chat_administrators(chat_id)
-        for admin in admins:
-            if admin.user.is_bot:
-                continue
-            msg = (
-                f"⚠️ Jadwal *{waktu}* jam *{jam}* belum lengkap.\n\n"
-                f"Belum dichecklist: {', '.join(unchecked_sections)}.\n\n"
-                "Mohon dicek segera. 🙏"
-            )
-            try:
-                await context.bot.send_message(chat_id=admin.user.id, text=msg, parse_mode="Markdown")
-            except Exception as e:
-                logger.warning(f"Gagal kirim pesan ke admin {admin.user.id}: {e}")
+        msg = (
+            f"⚠️ Jadwal *{waktu}* jam *{jam}* belum lengkap.\n\n"
+            f"Belum dichecklist: {', '.join(unchecked_sections)}.\n\n"
+            "Mohon dicek segera. 🙏"
+        )
+        await context.bot.send_message(
+            chat_id=chat_id,
+            message_thread_id=thread_id,
+            text=msg,
+            parse_mode="Markdown"
+        )
 
 # ----------------------
 # Command Handlers
@@ -196,28 +189,37 @@ async def toggle_reminder_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
         parts = cmd.split('_')
         waktu = parts[1] if len(parts) == 2 else None
         if waktu in TIMES:
-            grp = group_reminders.setdefault(cid, {k: False for k in TIMES})
+            thread_id = update.message.message_thread_id
+            grp = group_reminders.setdefault(cid, {})
             on = parts[0] == 'aktifkan'
-            grp[waktu] = on
+            grp[waktu] = {'enabled': on, 'thread_id': thread_id}
+
+            # Remove existing jobs to avoid duplicates
+            for job in context.application.job_queue.get_jobs_by_name(f"r_{waktu}_"):
+                job.schedule_removal()
+            for job in context.application.job_queue.get_jobs_by_name(f"n_{waktu}_"):
+                job.schedule_removal()
 
             if on:
                 for ts in TIMES[waktu]:
                     h, m = map(int, ts.split(':'))
+                    data = {"waktu": waktu, "chat_id": cid, "thread_id": thread_id}
                     context.application.job_queue.run_daily(
                         send_reminder,
                         time=datetime.time(hour=h, minute=m, tzinfo=timezone),
                         days=(0,1,2,3,4,5,6),
                         name=f"r_{waktu}_{ts}_{cid}",
-                        data={"waktu": waktu, "chat_id": cid}
+                        data=data
                     )
                     total_min = h*60 + m + 20
                     nh, nm = divmod(total_min % (24*60), 60)
+                    notify_data = {"waktu": waktu, "jam": ts, "chat_id": cid, "thread_id": thread_id}
                     context.application.job_queue.run_daily(
                         notify_unchecked,
                         time=datetime.time(hour=nh, minute=nm, tzinfo=timezone),
                         days=(0,1,2,3,4,5,6),
                         name=f"n_{waktu}_{ts}_{cid}",
-                        data={"waktu": waktu, "jam": ts, "chat_id": cid}
+                        data=notify_data
                     )
 
             await update.message.reply_text(
@@ -239,25 +241,29 @@ async def waktu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start_jobqueue(app):
     for cid, rem in group_reminders.items():
         for w, slots in TIMES.items():
-            if not rem.get(w):
+            cfg = rem.get(w)
+            if not cfg or not cfg.get('enabled'):
                 continue
+            thread_id = cfg.get('thread_id')
             for ts in slots:
                 h, m = map(int, ts.split(':'))
+                data = {"waktu": w, "chat_id": cid, "thread_id": thread_id}
                 app.job_queue.run_daily(
                     send_reminder,
                     time=datetime.time(hour=h, minute=m, tzinfo=timezone),
                     days=(0,1,2,3,4,5,6),
                     name=f"r_{w}_{ts}_{cid}",
-                    data={"waktu": w, "chat_id": cid}
+                    data=data
                 )
                 total_min = h*60 + m + 20
                 nh, nm = divmod(total_min % (24*60), 60)
+                notify_data = {"waktu": w, "jam": ts, "chat_id": cid, "thread_id": thread_id}
                 app.job_queue.run_daily(
                     notify_unchecked,
                     time=datetime.time(hour=nh, minute=nm, tzinfo=timezone),
                     days=(0,1,2,3,4,5,6),
                     name=f"n_{w}_{ts}_{cid}",
-                    data={"waktu": w, "jam": ts, "chat_id": cid}
+                    data=notify_data
                 )
     await app.job_queue.start()
     logger.info("JobQueue started")
