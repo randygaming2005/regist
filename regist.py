@@ -204,22 +204,39 @@ async def toggle_reminder_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
             grp = group_reminders.setdefault(cid, {})
             on = parts[0] == 'aktifkan'
             grp[waktu] = {'enabled': on, 'thread_id': thread_id}
-            for job in context.application.job_queue.get_jobs():
-                if job.name.startswith((f"r_{waktu}_", f"n_{waktu}_")):
-                    job.schedule_removal()
+
+            # 🔧 Hapus job lama menggunakan get_jobs_by_name
+            job_queue = context.job_queue
+            for ts in TIMES[waktu]:
+                r_name = f"r_{waktu}_{ts}_{cid}"
+                n_name = f"n_{waktu}_{ts}_{cid}"
+                for name in [r_name, n_name]:
+                    for job in job_queue.get_jobs_by_name(name):
+                        job.schedule_removal()
+
+            # 🔁 Tambahkan job baru jika diaktifkan
             if on:
                 for ts in TIMES[waktu]:
-                    h,m = map(int, ts.split(':'))
+                    h, m = map(int, ts.split(':'))
                     data = {"waktu": waktu, "chat_id": cid, "thread_id": thread_id}
-                    context.application.job_queue.run_daily(send_reminder,
-                        time=datetime.time(hour=h,minute=m,tzinfo=timezone), days=range(7),
-                        name=f"r_{waktu}_{ts}_{cid}", data=data)
-                    tot = h*60+m+20
-                    nh,nm = divmod(tot%(24*60),60)
-                    nd={"waktu":waktu,"jam":ts,"chat_id":cid,"thread_id":thread_id}
-                    context.application.job_queue.run_daily(notify_unchecked,
-                        time=datetime.time(hour=nh,minute=nm,tzinfo=timezone), days=range(7),
-                        name=f"n_{waktu}_{ts}_{cid}", data=nd)
+                    context.job_queue.run_daily(
+                        send_reminder,
+                        time=datetime.time(hour=h, minute=m, tzinfo=timezone),
+                        days=range(7),
+                        name=f"r_{waktu}_{ts}_{cid}",
+                        data=data
+                    )
+                    tot = h*60 + m + 20
+                    nh, nm = divmod(tot % (24 * 60), 60)
+                    nd = {"waktu": waktu, "jam": ts, "chat_id": cid, "thread_id": thread_id}
+                    context.job_queue.run_daily(
+                        notify_unchecked,
+                        time=datetime.time(hour=nh, minute=nm, tzinfo=timezone),
+                        days=range(7),
+                        name=f"n_{waktu}_{ts}_{cid}",
+                        data=nd
+                    )
+
             await update.message.reply_text(f"✅ Pengingat {waktu} {'diaktifkan' if on else 'dinonaktifkan'} untuk grup.")
             return
     await update.message.reply_text("Perintah tidak dikenali.")
@@ -238,16 +255,16 @@ async def start_jobqueue(app):
             if not cfg or not cfg.get('enabled'): continue
             tid = cfg.get('thread_id')
             for ts in TIMES[w]:
-                h,m = map(int,ts.split(':'))
-                d={"waktu":w,"chat_id":cid,"thread_id":tid}
+                h, m = map(int, ts.split(':'))
+                d = {"waktu": w, "chat_id": cid, "thread_id": tid}
                 app.job_queue.run_daily(send_reminder,
-                    time=datetime.time(hour=h,minute=m,tzinfo=timezone),days=range(7),
-                    name=f"r_{w}_{ts}_{cid}",data=d)
-                tot=h*60+m+20;nh,nm=divmod(tot%(24*60),60)
-                nd={"waktu":w,"jam":ts,"chat_id":cid,"thread_id":tid}
+                    time=datetime.time(hour=h, minute=m, tzinfo=timezone), days=range(7),
+                    name=f"r_{w}_{ts}_{cid}", data=d)
+                tot = h*60 + m + 20; nh, nm = divmod(tot % (24*60), 60)
+                nd = {"waktu": w, "jam": ts, "chat_id": cid, "thread_id": tid}
                 app.job_queue.run_daily(notify_unchecked,
-                    time=datetime.time(hour=nh,minute=nm,tzinfo=timezone),days=range(7),
-                    name=f"n_{w}_{ts}_{cid}",data=nd)
+                    time=datetime.time(hour=nh, minute=nm, tzinfo=timezone), days=range(7),
+                    name=f"n_{w}_{ts}_{cid}", data=nd)
     await app.job_queue.start()
     logger.info("JobQueue started")
 
