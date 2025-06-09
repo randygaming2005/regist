@@ -61,7 +61,7 @@ generic_reminder = {
 }
 
 # ----------------------
-# Helper: Show Schedule
+# Helper: Show Schedule with original grouping
 # ----------------------
 async def show_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE, waktu="pagi", page=0):
     chat_id = update.effective_chat.id
@@ -73,15 +73,28 @@ async def show_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE, wakt
     subs = SUBMENUS[start:end]
 
     text = f"*Jadwal {waktu.capitalize()}*"
-
-    # Build keyboard
     rows = []
+
     for sec in subs:
-        for idx, jam in enumerate(TIMES[waktu]):
-            key = f"{sec}_{jam}"
-            sym = '✅' if key in user_skips.get(chat_id, set()) else '❌'
-            label = f"{sec} {jam} {sym}" if idx == 0 else f"{jam} {sym}"
-            rows.append([InlineKeyboardButton(label, callback_data=f"toggle_{waktu}_{sec}_{jam}_{page}")])
+        # First slot with section
+        first_jam = TIMES[waktu][0]
+        key = f"{sec}_{first_jam}"
+        sym = '✅' if key in user_skips.get(chat_id, set()) else '❌'
+        rows.append([
+            InlineKeyboardButton(f"{sec} {first_jam} {sym}", callback_data=f"toggle_{waktu}_{sec}_{first_jam}_{page}")
+        ])
+
+        # Remaining slots
+        small_buttons = []
+        for jam in TIMES[waktu][1:]:
+            key2 = f"{sec}_{jam}"
+            sym2 = '✅' if key2 in user_skips.get(chat_id, set()) else '❌'
+            small_buttons.append(
+                InlineKeyboardButton(f"{jam} {sym2}", callback_data=f"toggle_{waktu}_{sec}_{jam}_{page}")
+            )
+        # Group in rows of up to 3
+        for i in range(0, len(small_buttons), 3):
+            rows.append(small_buttons[i:i+3])
 
     # Navigation
     nav = []
@@ -120,7 +133,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_schedule(update, context, waktu=w, page=int(pg))
 
 # ----------------------
-# Reminder & Notification
+# Reminder & Notification (all to topic)
 # ----------------------
 async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
     data = context.job.data
@@ -161,7 +174,7 @@ async def notify_unchecked(context: ContextTypes.DEFAULT_TYPE):
         )
 
 # ----------------------
-# Command Handlers
+# Command Handlers & Setup
 # ----------------------
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = (
@@ -194,11 +207,10 @@ async def toggle_reminder_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
             on = parts[0] == 'aktifkan'
             grp[waktu] = {'enabled': on, 'thread_id': thread_id}
 
-            # Remove existing jobs to avoid duplicates
-            for job in context.application.job_queue.get_jobs_by_name(f"r_{waktu}_"):
-                job.schedule_removal()
-            for job in context.application.job_queue.get_jobs_by_name(f"n_{waktu}_"):
-                job.schedule_removal()
+            # Remove existing jobs
+            for job in context.application.job_queue.get_jobs():
+                if job.name.startswith(f"r_{waktu}_") or job.name.startswith(f"n_{waktu}_"):
+                    job.schedule_removal()
 
             if on:
                 for ts in TIMES[waktu]:
@@ -235,9 +247,6 @@ async def waktu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Perintah tidak dikenali.")
 
-# ----------------------
-# Setup Jobs & App
-# ----------------------
 async def start_jobqueue(app):
     for cid, rem in group_reminders.items():
         for w, slots in TIMES.items():
