@@ -61,13 +61,12 @@ generic_reminder = {
 }
 
 # ----------------------
-# Helper: Show Schedule with original grouping
+# Helper: Show Schedule with grouping + CLEAR button
 # ----------------------
-async def show_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE, waktu="pagi", page=0):
+async def show_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE, waktu: str = "pagi", page: int = 0):
     chat_id = update.effective_chat.id
     user_pages[chat_id] = page
 
-    # Pagination
     start = page * PAGE_SIZE
     end = start + PAGE_SIZE
     subs = SUBMENUS[start:end]
@@ -76,7 +75,6 @@ async def show_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE, wakt
     rows = []
 
     for sec in subs:
-        # First slot with section
         first_jam = TIMES[waktu][0]
         key = f"{sec}_{first_jam}"
         sym = '✅' if key in user_skips.get(chat_id, set()) else '❌'
@@ -84,7 +82,6 @@ async def show_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE, wakt
             InlineKeyboardButton(f"{sec} {first_jam} {sym}", callback_data=f"toggle_{waktu}_{sec}_{first_jam}_{page}")
         ])
 
-        # Remaining slots
         small_buttons = []
         for jam in TIMES[waktu][1:]:
             key2 = f"{sec}_{jam}"
@@ -92,11 +89,9 @@ async def show_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE, wakt
             small_buttons.append(
                 InlineKeyboardButton(f"{jam} {sym2}", callback_data=f"toggle_{waktu}_{sec}_{jam}_{page}")
             )
-        # Group in rows of up to 3
         for i in range(0, len(small_buttons), 3):
             rows.append(small_buttons[i:i+3])
 
-    # Navigation
     nav = []
     total_pages = (len(SUBMENUS) - 1) // PAGE_SIZE
     if page > 0:
@@ -106,10 +101,15 @@ async def show_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE, wakt
     if nav:
         rows.append(nav)
 
+    rows.append([
+        InlineKeyboardButton("♻️ CLEAR ♻️", callback_data=f"clear_{waktu}_{page}")
+    ])
+
+    reply_markup = InlineKeyboardMarkup(rows)
     if update.message:
-        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(rows))
+        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=reply_markup)
     else:
-        await update.callback_query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(rows))
+        await update.callback_query.edit_message_text(text, parse_mode="Markdown", reply_markup=reply_markup)
 
 # ----------------------
 # Callback Handler
@@ -118,22 +118,32 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     data = q.data
-    if data.startswith("toggle_"):
-        _, w, sec, j, pg = data.split("_", 4)
-        cid = q.message.chat.id
-        key = f"{sec}_{j}"
+    cid = q.message.chat.id
+
+    parts = data.split("_")
+    action = parts[0]
+
+    if action == "toggle" and len(parts) == 5:
+        _, w, sec, jam, pg = parts
+        key = f"{sec}_{jam}"
         skips = user_skips.setdefault(cid, set())
         if key in skips:
             skips.remove(key)
         else:
             skips.add(key)
         await show_schedule(update, context, waktu=w, page=int(pg))
-    elif data.startswith("nav_"):
-        _, w, pg = data.split("_", 2)
+
+    elif action == "nav" and len(parts) == 3:
+        _, w, pg = parts
+        await show_schedule(update, context, waktu=w, page=int(pg))
+
+    elif action == "clear" and len(parts) == 3:
+        _, w, pg = parts
+        user_skips.pop(cid, None)
         await show_schedule(update, context, waktu=w, page=int(pg))
 
 # ----------------------
-# Reminder & Notification (all to topic)
+# Reminder & Notification
 # ----------------------
 async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
     data = context.job.data
@@ -144,12 +154,15 @@ async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
 
     logger.info(f"🔔 Reminder: sesi={waktu}, chat_id={chat_id}, time={now}")
     reminder_text = generic_reminder[waktu]
-    await context.bot.send_message(
-        chat_id=chat_id,
-        message_thread_id=thread_id,
-        text=f"{reminder_text}\n🕒 Waktu saat ini: *{now}*",
-        parse_mode="Markdown"
-    )
+    try:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            message_thread_id=thread_id,
+            text=f"{reminder_text}\n🕒 Waktu saat ini: *{now}*",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Gagal mengirim reminder: {e}")
 
 async def notify_unchecked(context: ContextTypes.DEFAULT_TYPE):
     data = context.job.data
@@ -159,11 +172,11 @@ async def notify_unchecked(context: ContextTypes.DEFAULT_TYPE):
     thread_id = data.get("thread_id")
     skips = user_skips.get(chat_id, set())
 
-    unchecked_sections = [sec for sec in SUBMENUS if f"{sec}_{jam}" not in skips]
-    if unchecked_sections:
+    unchecked = [s for s in SUBMENUS if f"{s}_{jam}" not in skips]
+    if unchecked:
         msg = (
             f"⚠️ Jadwal *{waktu}* jam *{jam}* belum lengkap.\n\n"
-            f"Belum dichecklist: {', '.join(unchecked_sections)}.\n\n"
+            f"Belum dichecklist: {', '.join(unchecked)}.\n\n"
             "Mohon dicek segera. 🙏"
         )
         await context.bot.send_message(
@@ -174,7 +187,7 @@ async def notify_unchecked(context: ContextTypes.DEFAULT_TYPE):
         )
 
 # ----------------------
-# Command Handlers & Setup
+# Commands
 # ----------------------
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = (
@@ -198,47 +211,47 @@ async def reset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def toggle_reminder_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cid = update.effective_chat.id
     cmd = update.message.text.lstrip('/').split('@')[0]
-    if cmd.endswith(('pagi','siang','malam')):
-        parts = cmd.split('_')
-        waktu = parts[1] if len(parts) == 2 else None
-        if waktu in TIMES:
-            thread_id = update.message.message_thread_id
-            grp = group_reminders.setdefault(cid, {})
-            on = parts[0] == 'aktifkan'
-            grp[waktu] = {'enabled': on, 'thread_id': thread_id}
+    parts = cmd.split('_')
+    if len(parts) == 2 and parts[1] in TIMES:
+        act, waktu = parts
+        thread_id = update.message.message_thread_id
+        grp = group_reminders.setdefault(cid, {})
+        on = (act == 'aktifkan')
+        grp[waktu] = {'enabled': on, 'thread_id': thread_id}
 
-            # Remove existing jobs
-            for job in context.application.job_queue.get_jobs():
-                if job.name.startswith(f"r_{waktu}_") or job.name.startswith(f"n_{waktu}_"):
-                    job.schedule_removal()
+        # Remove existing jobs for this chat and waktu
+        for job in context.application.job_queue.get_jobs():
+            if f"_{waktu}_" in job.name:
+                job.schedule_removal()
 
-            if on:
-                for ts in TIMES[waktu]:
-                    h, m = map(int, ts.split(':'))
-                    data = {"waktu": waktu, "chat_id": cid, "thread_id": thread_id}
-                    context.application.job_queue.run_daily(
-                        send_reminder,
-                        time=datetime.time(hour=h, minute=m, tzinfo=timezone),
-                        days=(0,1,2,3,4,5,6),
-                        name=f"r_{waktu}_{ts}_{cid}",
-                        data=data
-                    )
-                    total_min = h*60 + m + 20
-                    nh, nm = divmod(total_min % (24*60), 60)
-                    notify_data = {"waktu": waktu, "jam": ts, "chat_id": cid, "thread_id": thread_id}
-                    context.application.job_queue.run_daily(
-                        notify_unchecked,
-                        time=datetime.time(hour=nh, minute=nm, tzinfo=timezone),
-                        days=(0,1,2,3,4,5,6),
-                        name=f"n_{waktu}_{ts}_{cid}",
-                        data=notify_data
-                    )
+        # Schedule new jobs if enabled
+        if on:
+            for ts in TIMES[waktu]:
+                h, m = map(int, ts.split(':'))
+                data = {"waktu": waktu, "chat_id": cid, "thread_id": thread_id}
+                context.application.job_queue.run_daily(
+                    send_reminder,
+                    time=datetime.time(hour=h, minute=m, tzinfo=timezone),
+                    days=(0,1,2,3,4,5,6),
+                    name=f"r_{waktu}_{ts}_{cid}",
+                    data=data
+                )
+                total_min = h*60 + m + 20
+                nh, nm = divmod(total_min % (24*60), 60)
+                notify_data = {"waktu": waktu, "jam": ts, "chat_id": cid, "thread_id": thread_id}
+                context.application.job_queue.run_daily(
+                    notify_unchecked,
+                    time=datetime.time(hour=nh, minute=nm, tzinfo=timezone),
+                    days=(0,1,2,3,4,5,6),
+                    name=f"n_{waktu}_{ts}_{cid}",
+                    data=notify_data
+                )
 
-            await update.message.reply_text(
-                f"✅ Pengingat {waktu} {'diaktifkan' if on else 'dinonaktifkan'} untuk grup."
-            )
-            return
-    await update.message.reply_text("Perintah tidak dikenali.")
+        await update.message.reply_text(
+            f"✅ Pengingat {waktu} {'diaktifkan' if on else 'dinonaktifkan'} untuk grup."
+        )
+    else:
+        await update.message.reply_text("Perintah tidak dikenali.")
 
 async def waktu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cmd = update.message.text.lstrip('/').split('@')[0]
@@ -247,14 +260,17 @@ async def waktu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Perintah tidak dikenali.")
 
+# ----------------------
+# Startup & Webhook
+# ----------------------
 async def start_jobqueue(app):
     for cid, rem in group_reminders.items():
-        for w, slots in TIMES.items():
+        for w in TIMES:
             cfg = rem.get(w)
             if not cfg or not cfg.get('enabled'):
                 continue
             thread_id = cfg.get('thread_id')
-            for ts in slots:
+            for ts in TIMES[w]:
                 h, m = map(int, ts.split(':'))
                 data = {"waktu": w, "chat_id": cid, "thread_id": thread_id}
                 app.job_queue.run_daily(
@@ -295,8 +311,10 @@ async def main():
         .build()
 
     app.add_handler(CommandHandler("start", start_cmd))
-    app.add_handler(CommandHandler(["aktifkan_pagi","aktifkan_siang","aktifkan_malam",
-                                     "nonaktifkan_pagi","nonaktifkan_siang","nonaktifkan_malam"], toggle_reminder_cmd))
+    app.add_handler(CommandHandler([
+        "aktifkan_pagi","aktifkan_siang","aktifkan_malam",
+        "nonaktifkan_pagi","nonaktifkan_siang","nonaktifkan_malam"
+    ], toggle_reminder_cmd))
     app.add_handler(CommandHandler(["pagi","siang","malam"], waktu_cmd))
     app.add_handler(CommandHandler("reset", reset_cmd))
     app.add_handler(CommandHandler("waktu", cmd_waktu))
