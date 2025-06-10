@@ -12,6 +12,7 @@ from telegram.ext import (
     ContextTypes,
     PicklePersistence,
 )
+from collections import deque
 
 # ----------------------
 # Logging & Config
@@ -123,15 +124,23 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     data = q.data
+    user = q.from_user.full_name or q.from_user.username
+    timestamp = datetime.datetime.now(timezone).strftime("%Y-%m-%d %H:%M:%S")
+    # Initialize history deque in chat_data
+    history = context.chat_data.setdefault('history', deque(maxlen=15))
+
     if data.startswith("toggle_"):
         _, w, sec, j, pg = data.split("_", 4)
         cid = q.message.chat.id
         key = f"{sec}_{j}"
         skips = user_skips.setdefault(cid, set())
+        action = 'removed' if key in skips else 'added'
         if key in skips:
             skips.remove(key)
         else:
             skips.add(key)
+        # Record history
+        history.append(f"{timestamp} - {user} {action} check for {sec} at {j}")
         await show_schedule(update, context, waktu=w, page=int(pg))
     elif data.startswith("nav_"):
         _, w, pg = data.split("_", 2)
@@ -139,6 +148,8 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("clear_"):
         _, w, pg = data.split("_", 2)
         cid = q.message.chat.id
+        # Record clear event
+        history.append(f"{timestamp} - {user} cleared all checks for {w}")
         user_skips[cid] = set()
         user_pages[cid] = 0
         await show_schedule(update, context, waktu=w, page=int(pg))
@@ -179,9 +190,20 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👋 Selamat datang di Bot Jadwal!\n"
         "Gunakan /pagi, /siang, /malam untuk lihat jadwal.\n"
         "Gunakan /aktifkan_pagi, /nonaktifkan_pagi (atau siang/malam) untuk mengelola pengingat grup.\n"
-        "/reset untuk reset checklistnya."
+        "/reset untuk reset checklistnya.\n"
+        "/history untuk melihat history edit checklist."
     )
     await update.message.reply_text(txt)
+
+async def history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    history = context.chat_data.get('history', deque())
+    if not history:
+        await update.message.reply_text("📜 Belum ada riwayat edit checklist.")
+    else:
+        lines = list(history)
+        text = "*Riwayat Edit Checklist:*
+" + "\n".join(f"{i+1}. {line}" for i, line in enumerate(lines))
+        await update.message.reply_text(text, parse_mode="Markdown")
 
 async def cmd_waktu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     now = datetime.datetime.now(timezone)
@@ -191,7 +213,8 @@ async def reset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cid = update.effective_chat.id
     user_skips.pop(cid, None)
     user_pages.pop(cid, None)
-    await update.message.reply_text("🔁 Checklist direset.")
+    context.chat_data.pop('history', None)
+    await update.message.reply_text("🔁 Checklist dan history direset.")
 
 async def toggle_reminder_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cid = update.effective_chat.id
@@ -281,6 +304,7 @@ async def handle_webhook(request):
 async def main():
     app = ApplicationBuilder().token(token).persistence(persistence).post_init(start_jobqueue).build()
     app.add_handler(CommandHandler("start", start_cmd))
+    app.add_handler(CommandHandler("history", history_cmd))
     app.add_handler(CommandHandler(["aktifkan_pagi","aktifkan_siang","aktifkan_malam",
                                      "nonaktifkan_pagi","nonaktifkan_siang","nonaktifkan_malam"], toggle_reminder_cmd))
     app.add_handler(CommandHandler(["pagi","siang","malam"], waktu_cmd))
