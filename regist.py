@@ -145,6 +145,14 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cid = q.message.chat.id
         user_skips[cid] = set()
         user_pages[cid] = 0
+
+        # record clear history
+        user = update.effective_user
+        ts = datetime.datetime.now(timezone).strftime("%Y-%m-%d %H:%M:%S")
+        edit_history.append((ts, user.full_name, f"♻️ CLEAR checklist sesi {w}"))
+        if len(edit_history) > 100:
+            edit_history.pop(0)
+
         await show_schedule(update, context, waktu=w, page=int(pg))
 
 # ----------------------
