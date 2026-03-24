@@ -362,11 +362,22 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def jadwal_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Memanggil ulang tabel jadwal jika yang lama sudah tenggelam, dan mem-pin nya secara otomatis."""
     cid = update.effective_chat.id
+    
+    # 1. Pastikan bot sudah diaktifkan di obrolan ini
+    active = context.bot_data.get("active_groups", set())
+    if cid not in active:
+        await update.message.reply_text("⚠️ *Gagal!* Bot belum diaktifkan di obrolan ini.\nSilakan ketik /aktifkan terlebih dahulu.", parse_mode="Markdown")
+        return
+
+    # 2. Dapatkan data shift saat ini
     now = datetime.datetime.now(timezone)
     current_shift, _ = get_shift_info(now)
     
-    chat_data = context.application.chat_data.setdefault(cid, {})
+    # 3. Gunakan context.chat_data secara aman
+    chat_data = context.chat_data
     await update.message.reply_text(f"🛠️ *Jadwal dipanggil manual oleh Admin.*", parse_mode="Markdown")
+    
+    # 4. Kirim dan Pin jadwal (karena message_id kosong, bot akan mengirim tabel baru)
     await send_schedule_to_chat(context.bot, cid, chat_data, current_shift)
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
