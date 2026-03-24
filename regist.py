@@ -54,18 +54,12 @@ EPOCH_DATE = datetime.date(2026, 3, 23)
 # Helper: Cek Shift & Waktu
 # ----------------------
 def get_shift_info(now: datetime.datetime):
-    """
-    Menghitung shift apa minggu ini dengan ambang batas pukul 07:00 pagi.
-    Ini memastikan shift Malam (23:00 - 07:00) tidak terpotong oleh pergantian hari kalender.
-    """
     if now.hour < 7:
         logical_now = now - datetime.timedelta(days=1)
     else:
         logical_now = now
         
     logical_date = logical_now.date()
-    
-    # Hitung selisih minggu dari EPOCH_DATE
     days_diff = (logical_date - EPOCH_DATE).days
     weeks_passed = days_diff // 7
     
@@ -73,23 +67,24 @@ def get_shift_info(now: datetime.datetime):
     return current_shift, logical_date
 
 def get_target_datetime(jam_str: str, now: datetime.datetime) -> datetime.datetime:
-    """Mengubah format jam (misal 00:00) menjadi objek datetime yang valid."""
     target_hour, target_minute = map(int, jam_str.split(':'))
     target = now.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
     
-    # Penyesuaian khusus: Jika lapor jam 23:5x untuk jadwal 00:00 shift malam (lintas hari ke depan)
     if now.hour == 23 and target_hour < 7:
         target += datetime.timedelta(days=1)
-    # Penyesuaian khusus: Jika lapor jam 00:0x untuk jadwal 23:xx (lintas hari ke belakang)
     elif now.hour < 7 and target_hour >= 23:
         target -= datetime.timedelta(days=1)
         
     return target
 
 # ----------------------
-# Helper: Tampilan Jadwal (Keyboard)
+# Helper: Tampilan Jadwal (Keyboard) & Fitur Auto-Pin
 # ----------------------
 async def send_schedule_to_chat(bot, chat_id, chat_data, waktu, page=0, message_id=None):
+    """
+    Mengirim atau mengedit pesan jadwal.
+    Jika jadwal baru (message_id=None), bot akan otomatis melakukan PIN pesan.
+    """
     chat_data["page"] = page
     start = page * PAGE_SIZE
     end = start + PAGE_SIZE
@@ -114,22 +109,50 @@ async def send_schedule_to_chat(bot, chat_id, chat_data, waktu, page=0, message_
 
     if message_id:
         try:
+            # Berusaha mengedit pesan jadwal lama
             await bot.edit_message_text(
                 chat_id=chat_id, message_id=message_id, 
                 text=text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(rows)
             )
-        except:
-            pass
+        except Exception as e:
+            error_msg = str(e).lower()
+            if "not modified" in error_msg:
+                pass # Abaikan jika status centang masih sama
+            else:
+                # Jika pesan lama terhapus manual, kirim baru, simpan ID, lalu Pin
+                msg = await bot.send_message(
+                    chat_id=chat_id, text=text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(rows)
+                )
+                chat_data["schedule_msg_id"] = msg.message_id
+                try:
+                    await bot.pin_chat_message(chat_id=chat_id, message_id=msg.message_id, disable_notification=True)
+                except:
+                    pass
     else:
-        await bot.send_message(
+        # 1. Unpin (lepas sematan) jadwal sebelumnya jika ada, agar tidak menumpuk
+        old_msg_id = chat_data.get("schedule_msg_id")
+        if old_msg_id:
+            try:
+                await bot.unpin_chat_message(chat_id=chat_id, message_id=old_msg_id)
+            except:
+                pass
+
+        # 2. Kirim pesan jadwal baru
+        msg = await bot.send_message(
             chat_id=chat_id, text=text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(rows)
         )
+        chat_data["schedule_msg_id"] = msg.message_id
+        
+        # 3. Pin pesan yang baru saja dikirim
+        try:
+            await bot.pin_chat_message(chat_id=chat_id, message_id=msg.message_id, disable_notification=True)
+        except Exception as e:
+            logger.error(f"Gagal mem-pin pesan di {chat_id}. Pastikan bot adalah Admin dengan hak Pin Messages. Error: {e}")
 
 # ----------------------
 # Sistem Otomatis: Master Tick (1 Menit)
 # ----------------------
 async def master_tick(context: ContextTypes.DEFAULT_TYPE):
-    """Fungsi ini berdetak setiap 1 menit. Mengatur Reset, Jadwal, Peringatan, & Ringkasan."""
     now = datetime.datetime.now(timezone)
     time_str = now.strftime("%H:%M")
     current_shift, _ = get_shift_info(now)
@@ -138,16 +161,18 @@ async def master_tick(context: ContextTypes.DEFAULT_TYPE):
     if not active_groups:
         return
 
-    # 1. AUTO-RESET (Tepat saat shift masuk: 07:00, 15:00, 23:00)
+    # 1. AUTO-RESET 
     reset_times = {"pagi": "07:00", "siang": "15:00", "malam": "23:00"}
     if time_str == reset_times[current_shift]:
         for cid in active_groups:
             if cid in context.application.chat_data:
                 context.application.chat_data[cid]["skips"] = set()
                 context.application.chat_data[cid]["history"] = []
+                # Hapus ID jadwal lama agar dikirim baru di shift ini
+                context.application.chat_data[cid].pop("schedule_msg_id", None) 
         logger.info(f"🔄 Auto-Reset data untuk shift {current_shift} dieksekusi.")
 
-    # 2. KIRIM JADWAL AWAL (10 Menit sebelum jam lapor pertama)
+    # 2. KIRIM JADWAL AWAL
     schedule_times = {"pagi": "07:50", "siang": "15:50", "malam": "23:50"}
     if time_str == schedule_times[current_shift]:
         for cid in active_groups:
@@ -157,16 +182,16 @@ async def master_tick(context: ContextTypes.DEFAULT_TYPE):
                 f"🌅 *PERSIAPAN SHIFT {current_shift.upper()}*\n\nSilakan mulai mengirimkan laporan. Batas waktu setiap laporan adalah 30 menit dari jadwal.", 
                 parse_mode="Markdown"
             )
+            # Akan otomatis terkirim dan di-Pin
             await send_schedule_to_chat(context.bot, cid, chat_data, current_shift)
 
-    # 3. PENGINGAT SETIAP JAM & PERINGATAN (Menit ke-00 dan ke-20)
+    # 3. PENGINGAT SETIAP JAM & PERINGATAN 
     if time_str in TIMES[current_shift]:
         for cid in active_groups:
             await context.bot.send_message(
                 cid, f"🔔 Waktu pelaporan jadwal *{time_str}* dimulai!", parse_mode="Markdown"
             )
             
-    # Peringatan 10 menit menuju penutupan (XX:20)
     for jam in TIMES[current_shift]:
         target = get_target_datetime(jam, now)
         warning_time = (target + datetime.timedelta(minutes=20)).strftime("%H:%M")
@@ -181,7 +206,7 @@ async def master_tick(context: ContextTypes.DEFAULT_TYPE):
                         parse_mode="Markdown"
                     )
 
-    # 4. RINGKASAN AKHIR SHIFT (30 Menit setelah jam lapor terakhir)
+    # 4. RINGKASAN AKHIR SHIFT
     summary_times = {"pagi": "14:30", "siang": "22:30", "malam": "06:30"}
     if time_str == summary_times[current_shift]:
         for cid in active_groups:
@@ -212,7 +237,6 @@ async def auto_check_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
     text_upper = text.upper()
 
     if "TEST DAFTAR" in text_upper:
-        # Wajib melampirkan foto
         if not message.photo and not message.document:
             msg = await message.reply_text(
                 "❌ *Laporan Ditolak!*\nWajib melampirkan foto/screenshot.", 
@@ -221,7 +245,6 @@ async def auto_check_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
             asyncio.create_task(delete_after(msg, 60))
             return
 
-        # Ekstrak Brand dan Waktu
         brand_match = re.search(r'BRAND\s*:\s*([A-Z0-9]+)', text_upper)
         waktu_match = re.search(r'WAKTU\s*:\s*(\d{2}:\d{2})', text_upper)
 
@@ -234,7 +257,6 @@ async def auto_check_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
         sec = brand_match.group(1).strip()
         jam = waktu_match.group(1).strip()
         
-        # Abaikan diam-diam jika brand tidak ada di daftar
         if sec not in SUBMENUS: 
             return 
 
@@ -249,7 +271,6 @@ async def auto_check_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
             asyncio.create_task(delete_after(msg, 60))
             return
 
-        # LOGIKA RENTANG WAKTU (10 Menit Sebelum s/d 30 Menit Sesudah)
         target_time = get_target_datetime(jam, now)
         window_start = target_time - datetime.timedelta(minutes=10)
         window_end = target_time + datetime.timedelta(minutes=30)
@@ -267,7 +288,6 @@ async def auto_check_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
             return
 
-        # EKSEKUSI CENTANG (Memori Permanen)
         chat_id = update.effective_chat.id
         chat_data = context.chat_data
         skips = chat_data.setdefault("skips", set())
@@ -285,8 +305,9 @@ async def auto_check_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 parse_mode="Markdown", reply_to_message_id=message.message_id
             )
             
-            # Segarkan tampilan jadwal secara otomatis
-            await send_schedule_to_chat(context.bot, chat_id, chat_data, current_shift)
+            # Edit pesan jadwal lama yang sudah ter-Pin secara "diam-diam"
+            sched_msg_id = chat_data.get("schedule_msg_id")
+            await send_schedule_to_chat(context.bot, chat_id, chat_data, current_shift, message_id=sched_msg_id)
         else:
             await message.reply_text(
                 f"⚠️ Jadwal *{sec}* jam *{jam}* sudah tercentang sebelumnya.", 
@@ -294,7 +315,6 @@ async def auto_check_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
 
 async def delete_after(message, seconds):
-    """Menghapus pesan error dari bot secara otomatis."""
     await asyncio.sleep(seconds)
     try: 
         await message.delete()
@@ -314,9 +334,19 @@ async def aktifkan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     current_shift, logical_date = get_shift_info(datetime.datetime.now(timezone))
     await update.message.reply_text(
-        f"✅ Bot diaktifkan di grup ini.\nSistem mendeteksi kalender kerja ini adalah: *SHIFT {current_shift.upper()}*", 
+        f"✅ Bot diaktifkan di obrolan ini.\nSistem mendeteksi kalender kerja ini adalah: *SHIFT {current_shift.upper()}*", 
         parse_mode="Markdown"
     )
+
+async def nonaktifkan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cid = update.effective_chat.id
+    active = context.bot_data.get("active_groups", set())
+    
+    if cid in active:
+        active.remove(cid)
+        await update.message.reply_text("⛔ *Bot Dinonaktifkan!*\nBot tidak akan memantau obrolan ini lagi.", parse_mode="Markdown")
+    else:
+        await update.message.reply_text("⚠️ Bot memang sedang tidak aktif.")
 
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     now = datetime.datetime.now(timezone)
@@ -330,7 +360,7 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def jadwal_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Panggil paksa papan jadwal jika server baru direstart di tengah jam kerja."""
+    """Memanggil ulang tabel jadwal jika yang lama sudah tenggelam, dan mem-pin nya secara otomatis."""
     cid = update.effective_chat.id
     now = datetime.datetime.now(timezone)
     current_shift, _ = get_shift_info(now)
@@ -340,7 +370,6 @@ async def jadwal_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_schedule_to_chat(context.bot, cid, chat_data, current_shift)
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Blokir interaksi tombol manual member."""
     q = update.callback_query
     await q.answer("❌ Centang otomatis. Silakan kirim foto bukti sesuai format!", show_alert=True)
 
@@ -348,7 +377,6 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Startup & Webhook
 # ----------------------
 async def on_startup(app: ApplicationBuilder):
-    # Daftarkan Master Tick setiap 60 detik
     app.job_queue.run_repeating(master_tick, interval=60, first=5)
     logger.info("Master Tick Started")
 
@@ -362,6 +390,7 @@ async def main():
 
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("aktifkan", aktifkan_cmd))
+    app.add_handler(CommandHandler("nonaktifkan", nonaktifkan_cmd))
     app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(CommandHandler("jadwal", jadwal_cmd))
     app.add_handler(CallbackQueryHandler(button))
