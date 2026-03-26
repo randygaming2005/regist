@@ -7,12 +7,14 @@ import re
 from aiohttp import web
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
+    Application,
     ApplicationBuilder,
     CommandHandler,
     CallbackQueryHandler,
     MessageHandler,
     filters,
     ContextTypes,
+    PicklePersistence,
 )
 
 # ----------------------
@@ -43,11 +45,15 @@ TIMES = {
     "malam": ["00:00", "01:00", "02:00", "03:00", "04:00", "05:00", "06:00"],
 }
 
+RESET_TIMES =   {"pagi": "07:00", "siang": "15:00", "malam": "23:00"}
+PREP_TIMES =    {"pagi": "07:50", "siang": "15:50", "malam": "23:50"}
+SUMMARY_TIMES = {"pagi": "14:30", "siang": "22:30", "malam": "06:30"}
+
 SHIFTS_ORDER = ["pagi", "malam", "siang"]
 EPOCH_DATE = datetime.date(2026, 3, 23)
 
 # ----------------------
-# Helper: Cek Shift & Waktu
+# Helper Functions
 # ----------------------
 def get_shift_info(now: datetime.datetime):
     if now.hour < 7:
@@ -74,20 +80,15 @@ def get_target_datetime(jam_str: str, now: datetime.datetime) -> datetime.dateti
     return target
 
 # ----------------------
-# Helper: Tampilan Jadwal (Tanpa Auto-Pin)
+# Tampilan Jadwal (Tanpa Auto-Pin)
 # ----------------------
-async def send_schedule_to_chat(bot, chat_id, chat_data, waktu, page=0, message_id=None):
-    chat_data["page"] = page
-    start = page * PAGE_SIZE
-    end = start + PAGE_SIZE
-    subs = SUBMENUS[start:end]
+async def send_schedule_to_chat(bot, chat_id, chat_data, waktu, message_id=None):
     thread_id = chat_data.get("thread_id") 
-
     text = f"📋 *Jadwal Shift {waktu.capitalize()}*\n_Otomatis tercentang saat bukti dikirim._"
     rows = []
     skips = chat_data.get("skips", set())
 
-    for sec in subs:
+    for sec in SUBMENUS:
         first = TIMES[waktu][0]
         sym = "✅" if f"{sec}_{first}" in skips else "❌"
         rows.append([InlineKeyboardButton(f"{sec} {first} {sym}", callback_data="block")])
@@ -106,125 +107,122 @@ async def send_schedule_to_chat(bot, chat_id, chat_data, waktu, page=0, message_
                 chat_id=chat_id, message_id=message_id, 
                 text=text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(rows)
             )
+            return
         except Exception as e:
-            error_msg = str(e).lower()
-            if "not modified" not in error_msg:
-                try:
-                    msg = await bot.send_message(
-                        chat_id=chat_id, message_thread_id=thread_id, text=text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(rows)
-                    )
-                    chat_data["schedule_msg_id"] = msg.message_id
-                except Exception:
-                    pass
-    else:
-        try:
-            msg = await bot.send_message(
-                chat_id=chat_id, message_thread_id=thread_id, text=text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(rows)
-            )
-            chat_data["schedule_msg_id"] = msg.message_id
-        except Exception as e:
-            logger.error(f"Gagal kirim pesan jadwal di {chat_id}: {e}")
+            if "not modified" not in str(e).lower():
+                pass
+
+    try:
+        msg = await bot.send_message(
+            chat_id=chat_id, message_thread_id=thread_id, text=text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(rows)
+        )
+        chat_data["schedule_msg_id"] = msg.message_id
+    except Exception as e:
+        logger.error(f"Gagal kirim pesan jadwal: {e}")
 
 # ----------------------
-# Sistem Otomatis: Master Tick (1 Menit)
+# Sistem Otomatis (JobQueue)
 # ----------------------
-async def master_tick(context: ContextTypes.DEFAULT_TYPE):
-    now = datetime.datetime.now(timezone)
-    time_str = now.strftime("%H:%M")
-    current_shift, _ = get_shift_info(now)
+async def job_reset(context: ContextTypes.DEFAULT_TYPE):
+    cid = context.job.data["chat_id"]
+    shift = context.job.data["shift"]
+    chat_data = context.application.chat_data.setdefault(cid, {})
+    chat_data["skips"] = set()
+    chat_data["history"] = []
+    chat_data.pop("schedule_msg_id", None) 
+    logger.info(f"🔄 Auto-Reset shift {shift} grup {cid}.")
+
+async def job_persiapan(context: ContextTypes.DEFAULT_TYPE):
+    d = context.job.data
+    try:
+        await context.bot.send_message(
+            chat_id=d["chat_id"], message_thread_id=d["thread_id"],
+            text=f"🌅 *PERSIAPAN SHIFT {d['shift'].upper()}*\n\nSilakan mulai mengirimkan laporan.", 
+            parse_mode="Markdown"
+        )
+        chat_data = context.application.chat_data.setdefault(d["chat_id"], {})
+        await send_schedule_to_chat(context.bot, d["chat_id"], chat_data, d["shift"])
+    except Exception as e:
+        logger.error(f"Error persiapan: {e}")
+
+async def job_mulai(context: ContextTypes.DEFAULT_TYPE):
+    d = context.job.data
+    try:
+        await context.bot.send_message(
+            chat_id=d["chat_id"], message_thread_id=d["thread_id"], 
+            text=f"🔔 Waktu pelaporan jadwal *{d['jam']}* dimulai!", parse_mode="Markdown"
+        )
+    except Exception:
+        pass
+
+async def job_peringatan(context: ContextTypes.DEFAULT_TYPE):
+    d = context.job.data
+    chat_data = context.application.chat_data.get(d["chat_id"], {})
+    skips = chat_data.get("skips", set())
+    missing = [s for s in SUBMENUS if f"{s}_{d['jam']}" not in skips]
     
-    active_groups = context.bot_data.get("active_groups", set())
-    if not active_groups:
-        return
+    if missing:
+        try:
+            await context.bot.send_message(
+                chat_id=d["chat_id"], message_thread_id=d["thread_id"],
+                text=f"⚠️ *PERINGATAN!* 10 Menit menuju batas akhir laporan *{d['jam']}*.\nBelum lapor: {', '.join(missing)}", 
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
 
-    for cid in list(active_groups):
-        chat_data = context.application.chat_data.setdefault(cid, {})
-        thread_id = chat_data.get("thread_id")
+async def job_rekap(context: ContextTypes.DEFAULT_TYPE):
+    d = context.job.data
+    chat_data = context.application.chat_data.get(d["chat_id"], {})
+    skips = chat_data.get("skips", set())
+    terlewat = []
+    
+    for sec in SUBMENUS:
+        for j in TIMES[d['shift']]:
+            if f"{sec}_{j}" not in skips: 
+                terlewat.append(f"❌ {sec} - {j}")
+                
+    admin_tags = "@cartenz88 @Agha1104 @Gemini_Squad"
+    if terlewat:
+        msg = (f"📊 <b>RINGKASAN AKHIR SHIFT {d['shift'].upper()}</b>\n\n"
+               f"Terdapat jadwal laporan yang <b>TERLEWAT</b>:\n"
+               f"{chr(10).join(terlewat)}\n\n"
+               f"Halo {admin_tags}, mohon bantuannya untuk menindaklanjuti. 🙏")
+    else:
+        msg = (f"📊 <b>RINGKASAN AKHIR SHIFT {d['shift'].upper()}</b>\n\n"
+               f"Laporan hari ini <b>SEMPURNA!</b> 🎉 Seluruh jadwal telah dilaporkan.\n\n"
+               f"Halo {admin_tags}, operasional berjalan lancar tanpa kendala. 🙏")
+               
+    try:
+        await context.bot.send_message(chat_id=d["chat_id"], message_thread_id=d["thread_id"], text=msg, parse_mode="HTML")
+    except Exception:
+        pass
 
-        # 1. AUTO-RESET SHIFT
-        reset_times = {"pagi": "07:00", "siang": "15:00", "malam": "23:00"}
-        if time_str == reset_times[current_shift]:
-            chat_data["skips"] = set()
-            chat_data["history"] = []
-            chat_data.pop("schedule_msg_id", None) 
-            logger.info(f"🔄 Auto-Reset data untuk shift {current_shift} dieksekusi di grup {cid}.")
+def schedule_group_jobs(job_queue, chat_id, thread_id):
+    for job in job_queue.jobs():
+        if job.name and job.name.endswith(f"_{chat_id}"):
+            job.schedule_removal()
 
-        # 2. PERSIAPAN SHIFT (Kirim Tabel Awal di menit ke-50)
-        schedule_times = {"pagi": "07:50", "siang": "15:50", "malam": "23:50"}
-        if time_str == schedule_times[current_shift]:
-            try:
-                await context.bot.send_message(
-                    chat_id=cid, 
-                    message_thread_id=thread_id,
-                    text=f"🌅 *PERSIAPAN SHIFT {current_shift.upper()}*\n\nSilakan mulai mengirimkan laporan.", 
-                    parse_mode="Markdown"
-                )
-                await send_schedule_to_chat(context.bot, cid, chat_data, current_shift)
-            except Exception as e:
-                logger.error(f"Error kirim persiapan ke {cid}: {e}")
-                # discard(cid) dihapus agar bot tidak mati mendadak
+    for shift, hours in TIMES.items():
+        rh, rm = map(int, RESET_TIMES[shift].split(':'))
+        job_queue.run_daily(job_reset, time=datetime.time(hour=rh, minute=rm, tzinfo=timezone), name=f"reset_{shift}_{chat_id}", data={"chat_id": chat_id, "shift": shift})
 
-        # 3. NOTIFIKASI JAM MULAI LAPOR
-        if time_str in TIMES[current_shift]:
-            try:
-                await context.bot.send_message(
-                    chat_id=cid, message_thread_id=thread_id, text=f"🔔 Waktu pelaporan jadwal *{time_str}* dimulai!", parse_mode="Markdown"
-                )
-            except Exception as e:
-                logger.error(f"Error kirim notif jam ke {cid}: {e}")
-                # discard(cid) dihapus
+        ph, pm = map(int, PREP_TIMES[shift].split(':'))
+        job_queue.run_daily(job_persiapan, time=datetime.time(hour=ph, minute=pm, tzinfo=timezone), name=f"prep_{shift}_{chat_id}", data={"chat_id": chat_id, "thread_id": thread_id, "shift": shift})
 
-        # 4. PERINGATAN 10 MENIT SEBELUM TUTUP (MENIT KE-20)
-        for jam in TIMES[current_shift]:
-            target = get_target_datetime(jam, now)
-            warning_time = (target + datetime.timedelta(minutes=20)).strftime("%H:%M")
-            if time_str == warning_time:
-                skips = chat_data.get("skips", set())
-                missing = [s for s in SUBMENUS if f"{s}_{jam}" not in skips]
-                if missing:
-                    try:
-                        await context.bot.send_message(
-                            chat_id=cid, 
-                            message_thread_id=thread_id,
-                            text=f"⚠️ *PERINGATAN!* 10 Menit menuju batas akhir laporan *{jam}*.\nBelum lapor: {', '.join(missing)}", 
-                            parse_mode="Markdown"
-                        )
-                    except Exception as e:
-                        logger.error(f"Error kirim peringatan ke {cid}: {e}")
-                        # discard(cid) dihapus
+        sh, sm = map(int, SUMMARY_TIMES[shift].split(':'))
+        job_queue.run_daily(job_rekap, time=datetime.time(hour=sh, minute=sm, tzinfo=timezone), name=f"rekap_{shift}_{chat_id}", data={"chat_id": chat_id, "thread_id": thread_id, "shift": shift})
 
-        # 5. RINGKASAN AKHIR SHIFT (Otomatis dengan Tag Admin)
-        summary_times = {"pagi": "14:30", "siang": "22:30", "malam": "06:30"}
-        if time_str == summary_times[current_shift]:
-            skips = chat_data.get("skips", set())
-            terlewat = []
-            for sec in SUBMENUS:
-                for j in TIMES[current_shift]:
-                    if f"{sec}_{j}" not in skips: 
-                        terlewat.append(f"❌ {sec} - {j}")
+        for jam in hours:
+            h, m = map(int, jam.split(':'))
+            job_queue.run_daily(job_mulai, time=datetime.time(hour=h, minute=m, tzinfo=timezone), name=f"start_{jam}_{chat_id}", data={"chat_id": chat_id, "thread_id": thread_id, "jam": jam})
             
-            admin_tags = "@cartenz88 @Agha1104 @Gemini_Squad"
-            
-            # Menggunakan parse_mode HTML agar karakter garis bawah (_) di username tidak menyebabkan error
-            if terlewat:
-                msg = (
-                    f"📊 <b>RINGKASAN AKHIR SHIFT {current_shift.upper()}</b>\n\n"
-                    f"Terdapat jadwal laporan yang <b>TERLEWAT</b>:\n"
-                    f"{chr(10).join(terlewat)}\n\n"
-                    f"Halo {admin_tags}, mohon bantuannya untuk mengingatkan dan menindaklanjuti tim terkait mengenai jadwal yang terlewat ini. Terima kasih! 🙏"
-                )
-            else:
-                msg = (
-                    f"📊 <b>RINGKASAN AKHIR SHIFT {current_shift.upper()}</b>\n\n"
-                    f"Laporan akhir shift hari ini <b>SEMPURNA!</b> 🎉 Seluruh jadwal telah dilaporkan dengan lengkap dan tepat waktu.\n\n"
-                    f"Halo {admin_tags}, sekilas informasi bahwa operasional shift berjalan lancar tanpa kendala. Terima kasih atas kerja keras seluruh tim! 🙏"
-                )
-            
-            try:
-                await context.bot.send_message(chat_id=cid, message_thread_id=thread_id, text=msg, parse_mode="HTML")
-            except Exception as e:
-                logger.error(f"Error kirim ringkasan ke {cid}: {e}")
-                # discard(cid) dihapus
+            warn_m = m + 20
+            warn_h = h
+            if warn_m >= 60:
+                warn_h = (warn_h + 1) % 24
+                warn_m -= 60
+            job_queue.run_daily(job_peringatan, time=datetime.time(hour=warn_h, minute=warn_m, tzinfo=timezone), name=f"warn_{jam}_{chat_id}", data={"chat_id": chat_id, "thread_id": thread_id, "jam": jam, "shift": shift})
 
 # ----------------------
 # Auto-Check (Laporan Member)
@@ -239,9 +237,7 @@ async def auto_check_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     chat_data = context.chat_data
     thread_id = message.message_thread_id
-    active_thread_id = chat_data.get("thread_id")
-    
-    if thread_id != active_thread_id: return
+    if thread_id != chat_data.get("thread_id"): return
 
     text = message.text or message.caption
     if not text: return
@@ -264,7 +260,6 @@ async def auto_check_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         sec = brand_match.group(1).strip()
         jam = waktu_match.group(1).strip()
-        
         if sec not in SUBMENUS: return 
 
         now = datetime.datetime.now(timezone)
@@ -280,16 +275,18 @@ async def auto_check_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
         window_end = target_time + datetime.timedelta(minutes=30)
 
         if now < window_start:
-            await message.reply_text(f"⏳ *Terlalu Cepat!*\nLaporan untuk {jam} baru bisa dikirim mulai {window_start.strftime('%H:%M')}.", reply_to_message_id=message.message_id)
+            msg = await message.reply_text(f"⏳ *Terlalu Cepat!*\nLaporan untuk {jam} baru bisa dikirim mulai {window_start.strftime('%H:%M')}.", reply_to_message_id=message.message_id)
+            asyncio.create_task(delete_after(msg, 60))
             return
         elif now > window_end:
-            await message.reply_text(f"⏰ *Terlambat!*\nBatas laporan {jam} ditutup pukul {window_end.strftime('%H:%M')}.", reply_to_message_id=message.message_id)
+            msg = await message.reply_text(f"⏰ *Terlambat!*\nBatas laporan {jam} ditutup pukul {window_end.strftime('%H:%M')}.", reply_to_message_id=message.message_id)
+            asyncio.create_task(delete_after(msg, 60))
             return
 
         skips = chat_data.setdefault("skips", set())
         history = chat_data.setdefault("history", [])
-        
         key = f"{sec}_{jam}"
+        
         if key not in skips:
             skips.add(key)
             history.append(f"✅ {sec} {jam} - {update.effective_user.full_name}")
@@ -311,7 +308,7 @@ async def delete_after(message, seconds):
 # Command Handlers
 # ----------------------
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 Bot Jadwal Siap! Gunakan /aktifkan di topic grup ini yang diinginkan.")
+    await update.message.reply_text("👋 Bot Jadwal Siap! Gunakan /aktifkan di topic yang diinginkan.")
 
 async def aktifkan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cid = update.effective_chat.id
@@ -319,34 +316,34 @@ async def aktifkan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     active = context.bot_data.setdefault("active_groups", set())
     active.add(cid)
+    context.bot_data["active_groups"] = active # Paksa simpan state untuk persistence
     context.chat_data["thread_id"] = thread_id
     
+    schedule_group_jobs(context.job_queue, cid, thread_id)
+    
     current_shift, _ = get_shift_info(datetime.datetime.now(timezone))
-    await update.message.reply_text(f"✅ Bot diaktifkan di topic ini.\nSistem mendeteksi: *SHIFT {current_shift.upper()}*", parse_mode="Markdown")
+    await update.message.reply_text(f"✅ Sistem Pengingat & Rekap *DIAKTIFKAN* di topic ini.\nShift Saat Ini: *{current_shift.upper()}*", parse_mode="Markdown")
+    
+    if "schedule_msg_id" not in context.chat_data:
+        await send_schedule_to_chat(context.bot, cid, context.chat_data, current_shift)
 
 async def nonaktifkan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cid = update.effective_chat.id
-    thread_id = update.message.message_thread_id
     active = context.bot_data.get("active_groups", set())
-    active_thread_id = context.chat_data.get("thread_id")
-    
-    if cid in active and thread_id == active_thread_id:
+    if cid in active:
         active.remove(cid)
-        context.chat_data.pop("thread_id", None)
-        await update.message.reply_text("⛔ *Bot Dinonaktifkan!*\nBot tidak akan memantau topic ini lagi.", parse_mode="Markdown")
-    else:
-        await update.message.reply_text("⚠️ Bot memang sedang tidak aktif di topic ini.")
+        context.bot_data["active_groups"] = active # Paksa simpan state untuk persistence
+        for job in context.job_queue.jobs():
+            if job.name and job.name.endswith(f"_{cid}"):
+                job.schedule_removal()
+        await update.message.reply_text("⛔ *Bot Dinonaktifkan!*\nSemua pengingat di topic ini dihentikan.", parse_mode="Markdown")
 
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cid = update.effective_chat.id
     now = datetime.datetime.now(timezone)
     current_shift, _ = get_shift_info(now)
-    cid = update.effective_chat.id
-    thread_id = update.message.message_thread_id
-    active_thread_id = context.chat_data.get("thread_id")
-    
-    is_active = "Aktif ✅" if cid in context.bot_data.get("active_groups", set()) and thread_id == active_thread_id else "Nonaktif ❌"
-    
-    await update.message.reply_text(f"📡 *STATUS BOT*\nStatus Topic ini: {is_active}\nShift Saat Ini: *{current_shift.upper()}*\nWaktu Server: {now.strftime('%H:%M')}", parse_mode="Markdown")
+    is_active = "Aktif ✅" if cid in context.bot_data.get("active_groups", set()) else "Nonaktif ❌"
+    await update.message.reply_text(f"📡 *STATUS BOT*\nStatus Topic ini: {is_active}\nShift: *{current_shift.upper()}*\nWaktu Server: {now.strftime('%H:%M')}", parse_mode="Markdown")
 
 async def jadwal_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cid = update.effective_chat.id
@@ -356,17 +353,14 @@ async def jadwal_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     thread_id = update.message.message_thread_id
-    active_thread_id = context.chat_data.get("thread_id")
-    if thread_id != active_thread_id: return
+    if thread_id != context.chat_data.get("thread_id"): return
 
     now = datetime.datetime.now(timezone)
     current_shift, _ = get_shift_info(now)
-    chat_data = context.chat_data
     
     await update.message.reply_text(f"🛠️ *Jadwal dipanggil manual oleh Admin.*", parse_mode="Markdown")
-    await send_schedule_to_chat(context.bot, cid, chat_data, current_shift)
+    await send_schedule_to_chat(context.bot, cid, context.chat_data, current_shift)
 
-# Fitur Cek Rekap Manual Tanpa Tag Admin
 async def rekap_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cid = update.effective_chat.id
     active = context.bot_data.get("active_groups", set())
@@ -375,15 +369,12 @@ async def rekap_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     thread_id = update.message.message_thread_id
-    active_thread_id = context.chat_data.get("thread_id")
-    if thread_id != active_thread_id: 
-        return
+    if thread_id != context.chat_data.get("thread_id"): return
 
     now = datetime.datetime.now(timezone)
     current_shift, _ = get_shift_info(now)
-    chat_data = context.chat_data
+    skips = context.chat_data.get("skips", set())
     
-    skips = chat_data.get("skips", set())
     terlewat = []
     for sec in SUBMENUS:
         for j in TIMES[current_shift]:
@@ -391,31 +382,25 @@ async def rekap_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 terlewat.append(f"❌ {sec} - {j}")
                 
     if terlewat:
-        msg = (
-            f"📊 *CEK REKAP SHIFT {current_shift.upper()}*\n"
-            f"Berikut jadwal yang BELUM/TERLEWAT:\n"
-            f"{chr(10).join(terlewat)}"
-        )
+        msg = f"📊 *CEK REKAP SHIFT {current_shift.upper()}*\nBerikut jadwal yang BELUM/TERLEWAT:\n{chr(10).join(terlewat)}"
     else:
-        msg = (
-            f"📊 *CEK REKAP SHIFT {current_shift.upper()}*\n"
-            f"Sejauh ini laporan SEMPURNA! 🎉 Seluruh jadwal telah dilaporkan."
-        )
+        msg = f"📊 *CEK REKAP SHIFT {current_shift.upper()}*\nSejauh ini laporan SEMPURNA! 🎉"
         
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer("❌ Centang otomatis. Silakan kirim foto bukti sesuai format!", show_alert=True)
+    await update.callback_query.answer("❌ Centang otomatis. Silakan kirim foto bukti!", show_alert=True)
 
 # ----------------------
 # Startup & Webhook
 # ----------------------
-async def on_startup(app: ApplicationBuilder):
-    app.job_queue.run_repeating(master_tick, interval=30, first=5)
-    logger.info("Master Tick Started")
+async def on_startup(app: Application): # <-- Perbaikan Typo Tipe Data
+    active_groups = app.bot_data.get("active_groups", set())
+    for cid in active_groups:
+        thread_id = app.chat_data.get(cid, {}).get("thread_id")
+        schedule_group_jobs(app.job_queue, cid, thread_id)
+    logger.info(f"✅ Berhasil memuat ulang jadwal untuk {len(active_groups)} grup aktif.")
 
-# Perbaikan 3: Fungsi handle_root ditambahkan agar UptimeRobot merespons dengan benar
 async def handle_root(request):
     return web.Response(text="Bot is running smoothly")
 
@@ -425,7 +410,8 @@ async def handle_webhook(request):
     return web.Response()
 
 async def main():
-    app = ApplicationBuilder().token(token).post_init(on_startup).build()
+    persistence = PicklePersistence(filepath="bot_jadwal_data.pickle")
+    app = ApplicationBuilder().token(token).persistence(persistence).post_init(on_startup).build()
 
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("aktifkan", aktifkan_cmd))
@@ -438,12 +424,7 @@ async def main():
 
     web_app = web.Application()
     web_app['application'] = app
-    
-    # Perbaikan 3: lambda diganti dengan handle_root
-    web_app.add_routes([
-        web.get('/', handle_root), 
-        web.post(WEBHOOK_PATH, handle_webhook)
-    ])
+    web_app.add_routes([web.get('/', handle_root), web.post(WEBHOOK_PATH, handle_webhook)])
 
     if WEBHOOK_URL: 
         await app.bot.set_webhook(WEBHOOK_URL)
@@ -454,7 +435,6 @@ async def main():
 
     await app.initialize()
     await app.start()
-    
     while True: 
         await asyncio.sleep(3600)
 
