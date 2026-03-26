@@ -149,7 +149,7 @@ async def master_tick(context: ContextTypes.DEFAULT_TYPE):
             chat_data.pop("schedule_msg_id", None) 
             logger.info(f"🔄 Auto-Reset data untuk shift {current_shift} dieksekusi di grup {cid}.")
 
-        # 2. PERSIAPAN SHIFT (Kirim Tabel Awal)
+        # 2. PERSIAPAN SHIFT (Kirim Tabel Awal di menit ke-50)
         schedule_times = {"pagi": "07:50", "siang": "15:50", "malam": "23:50"}
         if time_str == schedule_times[current_shift]:
             try:
@@ -162,7 +162,7 @@ async def master_tick(context: ContextTypes.DEFAULT_TYPE):
                 await send_schedule_to_chat(context.bot, cid, chat_data, current_shift)
             except Exception as e:
                 logger.error(f"Error kirim persiapan ke {cid}: {e}")
-                active_groups.discard(cid)
+                # discard(cid) dihapus agar bot tidak mati mendadak
 
         # 3. NOTIFIKASI JAM MULAI LAPOR
         if time_str in TIMES[current_shift]:
@@ -172,7 +172,7 @@ async def master_tick(context: ContextTypes.DEFAULT_TYPE):
                 )
             except Exception as e:
                 logger.error(f"Error kirim notif jam ke {cid}: {e}")
-                active_groups.discard(cid)
+                # discard(cid) dihapus
 
         # 4. PERINGATAN 10 MENIT SEBELUM TUTUP (MENIT KE-20)
         for jam in TIMES[current_shift]:
@@ -191,7 +191,7 @@ async def master_tick(context: ContextTypes.DEFAULT_TYPE):
                         )
                     except Exception as e:
                         logger.error(f"Error kirim peringatan ke {cid}: {e}")
-                        active_groups.discard(cid)
+                        # discard(cid) dihapus
 
         # 5. RINGKASAN AKHIR SHIFT (Otomatis dengan Tag Admin)
         summary_times = {"pagi": "14:30", "siang": "22:30", "malam": "06:30"}
@@ -203,28 +203,28 @@ async def master_tick(context: ContextTypes.DEFAULT_TYPE):
                     if f"{sec}_{j}" not in skips: 
                         terlewat.append(f"❌ {sec} - {j}")
             
-            admin_tags = "@cartenz88 @Agha1104 @Gemini\_Squad"
+            admin_tags = "@cartenz88 @Agha1104 @Gemini_Squad"
             
+            # Menggunakan parse_mode HTML agar karakter garis bawah (_) di username tidak menyebabkan error
             if terlewat:
                 msg = (
-                    f"📊 *REKAP AKHIR SHIFT {current_shift.upper()}*\n"
-                    f"Berikut jadwal yang TERLEWAT:\n"
+                    f"📊 <b>RINGKASAN AKHIR SHIFT {current_shift.upper()}</b>\n\n"
+                    f"Terdapat jadwal laporan yang <b>TERLEWAT</b>:\n"
                     f"{chr(10).join(terlewat)}\n\n"
-                    f"{admin_tags}\n"
-                    f"Mohon arahannya untuk tim terkait. Terima kasih! 🙏"
+                    f"Halo {admin_tags}, mohon bantuannya untuk mengingatkan dan menindaklanjuti tim terkait mengenai jadwal yang terlewat ini. Terima kasih! 🙏"
                 )
             else:
                 msg = (
-                    f"📊 *REKAP AKHIR SHIFT {current_shift.upper()}*\n"
-                    f"laporan akhir shift hari ini SEMPURNA! 🎉. Seluruh jadwal telah dilaporkan tepat waktu. Terima kasih atas kerja keras tim! 🙏\n\n"
-                    f"{admin_tags}"
+                    f"📊 <b>RINGKASAN AKHIR SHIFT {current_shift.upper()}</b>\n\n"
+                    f"Laporan akhir shift hari ini <b>SEMPURNA!</b> 🎉 Seluruh jadwal telah dilaporkan dengan lengkap dan tepat waktu.\n\n"
+                    f"Halo {admin_tags}, sekilas informasi bahwa operasional shift berjalan lancar tanpa kendala. Terima kasih atas kerja keras seluruh tim! 🙏"
                 )
             
             try:
-                await context.bot.send_message(chat_id=cid, message_thread_id=thread_id, text=msg, parse_mode="Markdown")
+                await context.bot.send_message(chat_id=cid, message_thread_id=thread_id, text=msg, parse_mode="HTML")
             except Exception as e:
                 logger.error(f"Error kirim ringkasan ke {cid}: {e}")
-                active_groups.discard(cid)
+                # discard(cid) dihapus
 
 # ----------------------
 # Auto-Check (Laporan Member)
@@ -415,6 +415,10 @@ async def on_startup(app: ApplicationBuilder):
     app.job_queue.run_repeating(master_tick, interval=30, first=5)
     logger.info("Master Tick Started")
 
+# Perbaikan 3: Fungsi handle_root ditambahkan agar UptimeRobot merespons dengan benar
+async def handle_root(request):
+    return web.Response(text="Bot is running smoothly")
+
 async def handle_webhook(request):
     app = request.app['application']
     await app.update_queue.put(Update.de_json(await request.json(), app.bot))
@@ -434,8 +438,10 @@ async def main():
 
     web_app = web.Application()
     web_app['application'] = app
+    
+    # Perbaikan 3: lambda diganti dengan handle_root
     web_app.add_routes([
-        web.get('/', lambda r: web.Response(text="Bot OK")), 
+        web.get('/', handle_root), 
         web.post(WEBHOOK_PATH, handle_webhook)
     ])
 
