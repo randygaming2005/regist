@@ -6,17 +6,15 @@ import re
 
 import pytz
 from aiohttp import web
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import Update
 from telegram.ext import (
-    Application,
     ApplicationBuilder,
-    CallbackQueryHandler,
     CommandHandler,
-    ContextTypes,
+    CallbackQueryHandler,
     MessageHandler,
+    ContextTypes,
     PicklePersistence,
     filters,
-    Defaults,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -44,7 +42,7 @@ SUMMARY_TIMES = {"pagi":"14:30","siang":"22:30","malam":"06:30"}
 SHIFTS_ORDER = ["pagi","malam","siang"]
 EPOCH_DATE = datetime.date(2026,3,23)
 
-SHIFT_SYNC_TIME = datetime.time(hour=7,minute=1)
+SHIFT_SYNC_TIME = datetime.time(hour=7,minute=1,tzinfo=TIMEZONE)
 
 persistence = PicklePersistence(filepath="bot_data.pkl")
 
@@ -69,14 +67,12 @@ def schedule_jobs(app, chat_id, thread_id, force=False):
 
     old_shift = chat_data.get("scheduled_shift")
 
-    # RESET STATE IF SHIFT CHANGED
     if old_shift != shift:
         chat_data["skips"] = set()
         chat_data["history"] = []
         chat_data.pop("schedule_msg_id",None)
         chat_data["jobs_initialized"] = False
 
-    # PREVENT DOUBLE JOB
     if not force and chat_data.get("jobs_initialized"):
         return
 
@@ -87,24 +83,24 @@ def schedule_jobs(app, chat_id, thread_id, force=False):
 
     # RESET
     h,m = map(int, RESET_TIMES[shift].split(":"))
-    app.job_queue.run_daily(job_reset, time=datetime.time(h,m), name=f"{chat_id}:reset", data={"cid":chat_id})
+    app.job_queue.run_daily(job_reset, time=datetime.time(h,m,tzinfo=TIMEZONE), name=f"{chat_id}:reset", data={"cid":chat_id})
 
     # PREP
     h,m = map(int, PREP_TIMES[shift].split(":"))
-    app.job_queue.run_daily(job_prep, time=datetime.time(h,m), name=f"{chat_id}:prep", data={"cid":chat_id,"tid":thread_id,"shift":shift})
+    app.job_queue.run_daily(job_prep, time=datetime.time(h,m,tzinfo=TIMEZONE), name=f"{chat_id}:prep", data={"cid":chat_id,"tid":thread_id,"shift":shift})
 
     # SUMMARY
     h,m = map(int, SUMMARY_TIMES[shift].split(":"))
-    app.job_queue.run_daily(job_summary, time=datetime.time(h,m), name=f"{chat_id}:sum", data={"cid":chat_id,"tid":thread_id,"shift":shift})
+    app.job_queue.run_daily(job_summary, time=datetime.time(h,m,tzinfo=TIMEZONE), name=f"{chat_id}:sum", data={"cid":chat_id,"tid":thread_id,"shift":shift})
 
     for jam in TIMES[shift]:
         h,m = map(int,jam.split(":"))
 
-        # start -10 min (tetap sesuai logic kamu)
+        # start -10 min (tetap original)
         sh = h-1 if h>0 else 23
         app.job_queue.run_daily(
             job_start,
-            time=datetime.time(sh,50),
+            time=datetime.time(sh,50,tzinfo=TIMEZONE),
             name=f"{chat_id}:start:{jam}",
             data={"cid":chat_id,"tid":thread_id,"jam":jam}
         )
@@ -117,7 +113,7 @@ def schedule_jobs(app, chat_id, thread_id, force=False):
 
         app.job_queue.run_daily(
             job_warn,
-            time=datetime.time(wh,wm),
+            time=datetime.time(wh,wm,tzinfo=TIMEZONE),
             name=f"{chat_id}:warn:{jam}",
             data={"cid":chat_id,"tid":thread_id,"jam":jam}
         )
@@ -141,39 +137,23 @@ async def job_reset(ctx):
 
 async def job_prep(ctx):
     d = ctx.job.data
-    await ctx.bot.send_message(
-        chat_id=d["cid"],
-        message_thread_id=d["tid"],
-        text=f"🚀 SHIFT {d['shift']} DIMULAI"
-    )
+    await ctx.bot.send_message(chat_id=d["cid"],message_thread_id=d["tid"],text=f"🚀 SHIFT {d['shift']} DIMULAI")
 
 async def job_start(ctx):
     d = ctx.job.data
-    await ctx.bot.send_message(
-        chat_id=d["cid"],
-        message_thread_id=d["tid"],
-        text=f"⏰ Jadwal {d['jam']} dibuka"
-    )
+    await ctx.bot.send_message(chat_id=d["cid"],message_thread_id=d["tid"],text=f"⏰ Jadwal {d['jam']} dibuka")
 
 async def job_warn(ctx):
     d = ctx.job.data
     cd = ctx.application.chat_data.get(d["cid"],{})
-    skips = cd.get("skips",set())
+    skips = set(cd.get("skips",[]))
     missing = [s for s in SUBMENUS if f"{s}_{d['jam']}" not in skips]
     if missing:
-        await ctx.bot.send_message(
-            chat_id=d["cid"],
-            message_thread_id=d["tid"],
-            text=f"⚠️ Belum: {', '.join(missing)}"
-        )
+        await ctx.bot.send_message(chat_id=d["cid"],message_thread_id=d["tid"],text=f"⚠️ Belum: {', '.join(missing)}")
 
 async def job_summary(ctx):
     d = ctx.job.data
-    await ctx.bot.send_message(
-        chat_id=d["cid"],
-        message_thread_id=d["tid"],
-        text="📊 Shift selesai"
-    )
+    await ctx.bot.send_message(chat_id=d["cid"],message_thread_id=d["tid"],text="📊 Shift selesai")
 
 async def job_sync(ctx):
     cid = ctx.job.data["cid"]
@@ -199,26 +179,18 @@ async def root(r):
     return web.Response(text="OK")
 
 async def webhook(r):
-    data = await r.json()
+    try:
+        data = await r.json()
+    except:
+        return web.Response(status=400)
+
     app = r.app["app"]
     await app.update_queue.put(Update.de_json(data,app.bot))
     return web.Response()
 
 # ================= MAIN =================
 async def main():
-    # ✅ KOMBINASI FIX
-    defaults_setting = Defaults(tzinfo=TIMEZONE)
-
-    app = (
-        ApplicationBuilder()
-        .token(TOKEN)
-        .persistence(persistence)
-        .defaults(defaults_setting)
-        .build()
-    )
-
-    # ✅ WAJIB untuk JobQueue
-    app.job_queue.scheduler.timezone = TIMEZONE
+    app = ApplicationBuilder().token(TOKEN).persistence(persistence).build()
 
     app.add_handler(CommandHandler("aktifkan",aktifkan))
 
