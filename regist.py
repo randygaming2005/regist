@@ -91,13 +91,13 @@ async def send_schedule_to_chat(bot, chat_id, chat_data, waktu, message_id=None)
     for sec in SUBMENUS:
         first = TIMES[waktu][0]
         sym = "✅" if f"{sec}_{first}" in skips else "❌"
-        # Menambahkan data spesifik ke tombol
+        # Tombol dengan data spesifik untuk Bypass
         rows.append([InlineKeyboardButton(f"{sec} {first} {sym}", callback_data=f"toggle_{sec}_{first}")])
         
         small = []
         for jam in TIMES[waktu][1:]:
             s2 = "✅" if f"{sec}_{jam}" in skips else "❌"
-            # Menambahkan data spesifik ke tombol
+            # Tombol dengan data spesifik untuk Bypass
             small.append(InlineKeyboardButton(f"{jam} {s2}", callback_data=f"toggle_{sec}_{jam}"))
         
         for i in range(0, len(small), 3):
@@ -123,7 +123,7 @@ async def send_schedule_to_chat(bot, chat_id, chat_data, waktu, message_id=None)
         logger.error(f"Gagal kirim pesan jadwal: {e}")
 
 # ----------------------
-# Sistem Otomatis (JobQueue)
+# Sistem Otomatis (JobQueue) - Teringan untuk Render
 # ----------------------
 async def job_reset(context: ContextTypes.DEFAULT_TYPE):
     cid = context.job.data["chat_id"]
@@ -210,16 +210,19 @@ async def job_rotator(context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"🔄 Rotasi shift harian diperbarui untuk grup {chat_id}.")
 
 def schedule_group_jobs(job_queue, chat_id, thread_id):
+    # Hapus job lama kecuali rotator
     for job in job_queue.jobs():
         if job.name and job.name.endswith(f"_{chat_id}") and not job.name.startswith("rotator_"):
             job.schedule_removal()
 
+    # Cek shift saat ini
     now = datetime.datetime.now(timezone)
     check_time = now + datetime.timedelta(hours=1) if (now.hour == 6 and now.minute >= 45) else now
     current_shift, _ = get_shift_info(check_time)
     
     hours = TIMES[current_shift]
 
+    # Hanya jadwalkan shift yang aktif
     rh, rm = map(int, RESET_TIMES[current_shift].split(':'))
     job_queue.run_daily(job_reset, time=datetime.time(hour=rh, minute=rm, tzinfo=timezone), name=f"reset_{current_shift}_{chat_id}", data={"chat_id": chat_id, "shift": current_shift})
 
@@ -240,6 +243,7 @@ def schedule_group_jobs(job_queue, chat_id, thread_id):
             warn_m -= 60
         job_queue.run_daily(job_peringatan, time=datetime.time(hour=warn_h, minute=warn_m, tzinfo=timezone), name=f"warn_{jam}_{chat_id}", data={"chat_id": chat_id, "thread_id": thread_id, "jam": jam, "shift": current_shift})
 
+    # Pastikan rotator berjalan setiap pagi jam 06:50 untuk cek pergantian minggu
     rotator_name = f"rotator_{chat_id}"
     if not any(j.name == rotator_name for j in job_queue.jobs()):
         job_queue.run_daily(
@@ -414,7 +418,7 @@ async def rekap_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 # ----------------------
-# Tombol Callback (Akses Dewa)
+# Tombol Callback (Akses Dewa) - SUDAH DIPERBAIKI
 # ----------------------
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -431,8 +435,8 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _, sec, jam = data.split("_")
         chat_id = query.message.chat.id
         
-        # Ambil state chat saat ini
-        chat_data = context.application.chat_data.setdefault(chat_id, {})
+        # Perbaikan: Langsung panggil context.chat_data dari grup saat ini
+        chat_data = context.chat_data 
         skips = chat_data.setdefault("skips", set())
         
         # Logika Toggle (Klik sekali centang, klik lagi batal centang)
@@ -452,7 +456,6 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_schedule_to_chat(context.bot, chat_id, chat_data, current_shift, message_id=query.message.message_id)
     else:
         await query.answer("❌ Aksi tidak valid.", show_alert=True)
-
 
 # ----------------------
 # Startup & Webhook
