@@ -128,10 +128,15 @@ async def send_schedule_to_chat(bot, chat_id, chat_data, waktu, message_id=None)
 async def job_reset(context: ContextTypes.DEFAULT_TYPE):
     cid = context.job.data["chat_id"]
     shift = context.job.data["shift"]
-    chat_data = context.application.chat_data.setdefault(cid, {})
-    chat_data["skips"] = set()
-    chat_data["history"] = []
-    chat_data.pop("schedule_msg_id", None) 
+    
+    # --- PERBAIKAN DISINI ---
+    chat_data = context.application.chat_data.get(cid)
+    if chat_data is not None:
+        chat_data["skips"] = set()
+        chat_data["history"] = []
+        chat_data.pop("schedule_msg_id", None) 
+    # ------------------------
+    
     logger.info(f"🔄 Auto-Reset shift {shift} grup {cid}.")
 
 async def job_persiapan(context: ContextTypes.DEFAULT_TYPE):
@@ -142,7 +147,11 @@ async def job_persiapan(context: ContextTypes.DEFAULT_TYPE):
             text=f"🌅 *PERSIAPAN SHIFT {d['shift'].upper()}*\n\nSilakan mulai mengirimkan laporan.", 
             parse_mode="Markdown"
         )
-        chat_data = context.application.chat_data.setdefault(d["chat_id"], {})
+        
+        # --- PERBAIKAN DISINI ---
+        chat_data = context.application.chat_data.get(d["chat_id"]) or {}
+        # ------------------------
+        
         await send_schedule_to_chat(context.bot, d["chat_id"], chat_data, d["shift"])
     except Exception as e:
         logger.error(f"Error persiapan: {e}")
