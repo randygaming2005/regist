@@ -350,9 +350,9 @@ async def auto_check_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     text = (msg.text or msg.caption).upper()
     if "TEST DAFTAR" in text:
+        # Peringatan wajib foto sekarang permanen
         if not msg.photo and not msg.document:
-            m = await msg.reply_text("❌ Wajib lampirkan foto/file!")
-            asyncio.create_task(delete_after(m, 60)) # Kembali ke 60 detik sesuai skrip awal Anda
+            await msg.reply_text("❌ Wajib lampirkan foto/file!")
             return
 
         brand_match = re.search(r'BRAND\s*:\s*([A-Z0-9]+)', text)
@@ -362,20 +362,17 @@ async def auto_check_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
             sec, jam = brand_match.group(1).strip(), waktu_match.group(1).strip()
             now = datetime.datetime.now(timezone)
             
-            # --- MULAI BAGIAN BARU: VALIDASI WAKTU ---
             target_dt = get_target_datetime(jam, now)
             start_window = target_dt - datetime.timedelta(minutes=10)
             end_window = target_dt + datetime.timedelta(minutes=30)
             
             if not (start_window <= now <= end_window):
+                # Peringatan waktu (terlalu cepat/telat) sekarang permanen
                 if now < start_window:
-                    m = await msg.reply_text(f"⏳ Terlalu cepat! Laporan {jam} baru bisa dikirim mulai {start_window.strftime('%H:%M')}.")
+                    await msg.reply_text(f"⏳ Terlalu cepat! Laporan {jam} baru bisa dikirim mulai {start_window.strftime('%H:%M')}.")
                 else:
-                    m = await msg.reply_text(f"⏰ Terlambat! Laporan {jam} sudah ditutup (Maksimal {end_window.strftime('%H:%M')}).")
-                
-                asyncio.create_task(delete_after(m, 60))
+                    await msg.reply_text(f"⏰ Terlambat! Laporan {jam} sudah ditutup (Maksimal {end_window.strftime('%H:%M')}).")
                 return
-            # --- AKHIR BAGIAN BARU ---
 
             current_shift, _ = get_shift_info(now)
             if sec in SUBMENUS and jam in TIMES[current_shift]:
@@ -387,6 +384,7 @@ async def auto_check_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     await send_schedule_to_chat(context.bot, chat_id, context.chat_data, current_shift, message_id=context.chat_data.get("schedule_msg_id"))
 
 async def delete_after(message, seconds):
+    """Fungsi ini dibiarkan saja jika suatu saat dibutuhkan, tapi tidak dipanggil lagi di atas."""
     await asyncio.sleep(seconds)
     try: await message.delete()
     except: pass
@@ -410,7 +408,6 @@ async def main():
     persistence = PicklePersistence(filepath="bot_jadwal_data.pickle")
     app = ApplicationBuilder().token(token).persistence(persistence).post_init(on_startup).build()
 
-    # Registrasi Perintah (KEMBALI UTUH)
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("aktifkan", aktifkan_cmd))
     app.add_handler(CommandHandler("nonaktifkan", nonaktifkan_cmd))
