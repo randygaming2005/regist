@@ -83,7 +83,7 @@ def get_target_datetime(jam_str: str, now: datetime.datetime) -> datetime.dateti
 # ----------------------
 # Tampilan Jadwal
 # ----------------------
-async def send_schedule_to_chat(bot, chat_id, chat_data, waktu, message_id=None):
+async def send_schedule_to_chat(bot, chat_id, chat_data, waktu, message_id=None, pin_message=False):
     thread_id = chat_data.get("thread_id") 
     text = f"📋 *Jadwal Shift {waktu.capitalize()}*\n_Otomatis tercentang saat bukti dikirim._"
     rows = []
@@ -118,6 +118,26 @@ async def send_schedule_to_chat(bot, chat_id, chat_data, waktu, message_id=None)
             chat_id=chat_id, message_thread_id=thread_id, text=text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(rows)
         )
         chat_data["schedule_msg_id"] = msg.message_id
+        
+        # --- LOGIKA UNPIN LAMA & PIN BARU ---
+        if pin_message:
+            # 1. Cek apakah ada pesan yang di-pin sebelumnya oleh bot
+            last_pinned = chat_data.get("last_pinned_id")
+            if last_pinned:
+                try:
+                    await bot.unpin_chat_message(chat_id=chat_id, message_id=last_pinned)
+                except Exception as e:
+                    logger.error(f"Gagal unpin pesan lama: {e}")
+
+            # 2. Pin pesan yang baru saja dikirim
+            try:
+                await bot.pin_chat_message(chat_id=chat_id, message_id=msg.message_id, disable_notification=True)
+                # Simpan ID baru ini sebagai pin terakhir
+                chat_data["last_pinned_id"] = msg.message_id
+            except Exception as e:
+                logger.error(f"Gagal pin pesan baru: {e}")
+        # ------------------------------------
+                
     except Exception as e:
         logger.error(f"Gagal kirim pesan jadwal: {e}")
 
@@ -143,7 +163,7 @@ async def job_persiapan(context: ContextTypes.DEFAULT_TYPE):
             text=f"🌅 *PERSIAPAN SHIFT {d['shift'].upper()}*\n\nSilakan mulai mengirimkan laporan.", 
             parse_mode="Markdown"
         )
-        await send_schedule_to_chat(context.bot, d["chat_id"], chat_data, d["shift"])
+        await send_schedule_to_chat(context.bot, d["chat_id"], chat_data, d["shift"], pin_message=True)
     except Exception as e:
         logger.error(f"Error persiapan: {e}")
 
@@ -282,7 +302,7 @@ async def aktifkan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_shift, _ = get_shift_info(datetime.datetime.now(timezone))
     await update.message.reply_text(f"✅ Sistem DIAKTIFKAN.\nShift: *{current_shift.upper()}*", parse_mode="Markdown")
     if "schedule_msg_id" not in context.chat_data:
-        await send_schedule_to_chat(context.bot, cid, context.chat_data, current_shift)
+        await send_schedule_to_chat(context.bot, cid, context.chat_data, current_shift, pin_message=True)
 
 async def nonaktifkan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cid = update.effective_chat.id
