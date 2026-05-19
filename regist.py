@@ -36,6 +36,10 @@ timezone = pytz.timezone(os.environ.get("TZ", "Asia/Jakarta"))
 # ----------------------
 # Schedule & Constants
 # ----------------------
+# TARGET ID SPESIFIK DARI LINK TELEGRAM
+TARGET_CHAT_ID = -1001832259904
+TARGET_THREAD_ID = 376193
+
 SUBMENUS = ["DWT", "BG", "DWL", "NG", "TG88", "TTGL", "KTT", "TTGG"]
 PAGE_SIZE = 10
 OWNER_USERNAME = "Intan_Payungggg" # Tanpa @ untuk pengecekan string
@@ -56,6 +60,13 @@ EPOCH_DATE = datetime.date(2026, 3, 23)
 # ----------------------
 # Helper Functions
 # ----------------------
+def is_allowed(update: Update) -> bool:
+    """Mengecek apakah pesan berasal dari grup dan topik yang diizinkan."""
+    if not update.effective_chat or not update.message:
+        return False
+    return (update.effective_chat.id == TARGET_CHAT_ID and 
+            update.message.message_thread_id == TARGET_THREAD_ID)
+
 def get_shift_info(now: datetime.datetime):
     if now.hour < 7:
         logical_now = now - datetime.timedelta(days=1)
@@ -84,7 +95,7 @@ def get_target_datetime(jam_str: str, now: datetime.datetime) -> datetime.dateti
 # Tampilan Jadwal
 # ----------------------
 async def send_schedule_to_chat(bot, chat_id, chat_data, waktu, message_id=None, pin_message=False):
-    thread_id = chat_data.get("thread_id") 
+    thread_id = chat_data.get("thread_id") or TARGET_THREAD_ID
     text = f"📋 *Jadwal Shift {waktu.capitalize()}*\n_Otomatis tercentang saat bukti dikirim._"
     rows = []
     skips = chat_data.get("skips", set())
@@ -121,7 +132,6 @@ async def send_schedule_to_chat(bot, chat_id, chat_data, waktu, message_id=None,
         
         # --- LOGIKA UNPIN LAMA & PIN BARU ---
         if pin_message:
-            # 1. Cek apakah ada pesan yang di-pin sebelumnya oleh bot
             last_pinned = chat_data.get("last_pinned_id")
             if last_pinned:
                 try:
@@ -129,14 +139,11 @@ async def send_schedule_to_chat(bot, chat_id, chat_data, waktu, message_id=None,
                 except Exception as e:
                     logger.error(f"Gagal unpin pesan lama: {e}")
 
-            # 2. Pin pesan yang baru saja dikirim
             try:
                 await bot.pin_chat_message(chat_id=chat_id, message_id=msg.message_id, disable_notification=True)
-                # Simpan ID baru ini sebagai pin terakhir
                 chat_data["last_pinned_id"] = msg.message_id
             except Exception as e:
                 logger.error(f"Gagal pin pesan baru: {e}")
-        # ------------------------------------
                 
     except Exception as e:
         logger.error(f"Gagal kirim pesan jadwal: {e}")
@@ -261,37 +268,35 @@ def schedule_group_jobs(job_queue, chat_id, thread_id):
 # Command Handlers
 # ----------------------
 async def say_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Fungsi agar bot bisa chat atas nama admin atau pemilik khusus."""
+    if not is_allowed(update): return
+    
     user = update.effective_user
     chat_id = update.effective_chat.id
     thread_id = update.message.message_thread_id
     
-    # Cek status admin
     member = await context.bot.get_chat_member(chat_id, user.id)
     is_admin = member.status in ["administrator", "creator"]
     is_owner = user.username and user.username.lower() == OWNER_USERNAME.lower()
 
     if not (is_admin or is_owner):
-        return # Abaikan jika bukan admin atau bukan Intan_Payungggg
+        return 
 
     if not context.args:
         return
 
     pesan = " ".join(context.args)
-    
-    # Hapus pesan perintah admin agar bersih
-    try:
-        await update.message.delete()
-    except:
-        pass
+    try: await update.message.delete()
+    except: pass
 
-    # Kirim sebagai bot
     await context.bot.send_message(chat_id=chat_id, message_thread_id=thread_id, text=pesan)
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 Bot Jadwal Siap! Gunakan /aktifkan di topic yang diinginkan.")
+    if not is_allowed(update): return
+    await update.message.reply_text("👋 Bot Jadwal Siap beroperasi di topik ini! Gunakan /aktifkan untuk memulai.")
 
 async def aktifkan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update): return
+    
     cid = update.effective_chat.id
     thread_id = update.message.message_thread_id
     active = context.bot_data.setdefault("active_groups", set())
@@ -299,12 +304,15 @@ async def aktifkan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.bot_data["active_groups"] = active
     context.chat_data["thread_id"] = thread_id
     schedule_group_jobs(context.job_queue, cid, thread_id)
+    
     current_shift, _ = get_shift_info(datetime.datetime.now(timezone))
     await update.message.reply_text(f"✅ Sistem DIAKTIFKAN.\nShift: *{current_shift.upper()}*", parse_mode="Markdown")
     if "schedule_msg_id" not in context.chat_data:
         await send_schedule_to_chat(context.bot, cid, context.chat_data, current_shift, pin_message=True)
 
 async def nonaktifkan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update): return
+    
     cid = update.effective_chat.id
     active = context.bot_data.get("active_groups", set())
     if cid in active:
@@ -316,6 +324,8 @@ async def nonaktifkan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ *Bot Dinonaktifkan!*", parse_mode="Markdown")
 
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update): return
+    
     cid = update.effective_chat.id
     now = datetime.datetime.now(timezone)
     current_shift, _ = get_shift_info(now)
@@ -323,12 +333,16 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"📡 *STATUS BOT*\nStatus: {is_active}\nShift: *{current_shift.upper()}*", parse_mode="Markdown")
 
 async def jadwal_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update): return
+    
     cid = update.effective_chat.id
     if cid not in context.bot_data.get("active_groups", set()): return
     current_shift, _ = get_shift_info(datetime.datetime.now(timezone))
     await send_schedule_to_chat(context.bot, cid, context.chat_data, current_shift)
 
 async def rekap_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update): return
+    
     cid = update.effective_chat.id
     if cid not in context.bot_data.get("active_groups", set()): return
     current_shift, _ = get_shift_info(datetime.datetime.now(timezone))
@@ -342,6 +356,12 @@ async def rekap_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ----------------------
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    
+    # Keamanan tambahan: Pastikan tombol hanya bisa ditekan di grup target (meskipun callback query tidak memiliki thread_id di Telegram saat ini)
+    if query.message.chat.id != TARGET_CHAT_ID:
+        await query.answer("Aksi tidak diizinkan di grup ini.", show_alert=True)
+        return
+
     user = query.from_user
     is_owner = user.username and user.username.lower() == OWNER_USERNAME.lower()
     
@@ -362,15 +382,16 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_schedule_to_chat(context.bot, query.message.chat.id, chat_data, current_shift, message_id=query.message.message_id)
 
 async def auto_check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Menggunakan is_allowed sebagai ganti pengecekan manual sebelumnya
+    if not is_allowed(update): return
+
     msg = update.message
     if not msg or not (msg.text or msg.caption): return
     chat_id = update.effective_chat.id
     if chat_id not in context.bot_data.get("active_groups", set()): return
-    if msg.message_thread_id != context.chat_data.get("thread_id"): return
 
     text = (msg.text or msg.caption).upper()
     if "TEST DAFTAR" in text:
-        # Peringatan wajib foto sekarang permanen
         if not msg.photo and not msg.document:
             await msg.reply_text("❌ Wajib lampirkan foto/file!")
             return
@@ -387,7 +408,6 @@ async def auto_check_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
             end_window = target_dt + datetime.timedelta(minutes=30)
             
             if not (start_window <= now <= end_window):
-                # Peringatan waktu (terlalu cepat/telat) sekarang permanen
                 if now < start_window:
                     await msg.reply_text(f"⏳ Terlalu cepat! Laporan {jam} baru bisa dikirim mulai {start_window.strftime('%H:%M')}.")
                 else:
@@ -403,19 +423,13 @@ async def auto_check_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     await msg.reply_text(f"✅ {sec} {jam} Diterima!")
                     await send_schedule_to_chat(context.bot, chat_id, context.chat_data, current_shift, message_id=context.chat_data.get("schedule_msg_id"))
 
-async def delete_after(message, seconds):
-    """Fungsi ini dibiarkan saja jika suatu saat dibutuhkan, tapi tidak dipanggil lagi di atas."""
-    await asyncio.sleep(seconds)
-    try: await message.delete()
-    except: pass
-
 # ----------------------
 # Main
 # ----------------------
 async def on_startup(app: Application):
     active = app.bot_data.get("active_groups", set())
     for cid in active:
-        tid = app.chat_data.get(cid, {}).get("thread_id")
+        tid = app.chat_data.get(cid, {}).get("thread_id") or TARGET_THREAD_ID
         schedule_group_jobs(app.job_queue, cid, tid)
 
 async def handle_root(request): return web.Response(text="Running")
