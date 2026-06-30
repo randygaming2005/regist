@@ -211,7 +211,7 @@ async def job_rekap(context: ContextTypes.DEFAULT_TYPE):
             if f"{sec}_{j}" not in skips: 
                 terlewat.append(f"❌ {sec} - {j}")
                 
-    admin_tags = "@ett2023 @gadissdesaaa"
+    admin_tags = "@CalvinWi @daelo"
     if terlewat:
         msg = (f"📊 <b>RINGKASAN AKHIR SHIFT {d['shift'].upper()}</b>\n\n"
                f"Terdapat jadwal laporan yang <b>TERLEWAT</b>:\n"
